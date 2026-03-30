@@ -70,6 +70,36 @@ class AnomalyLogger:
             raw_data={"mission": mission_name},
         ))
 
+    def log_no_gf_column(
+        self, source_file: str, source_row: str,
+        document_key: str, mission_name: str, group_name: str,
+        status: str, response_date: str, comment: str
+    ) -> None:
+        """
+        GED mission group has no approbateur column in the GrandFichier.
+        Logged as INFO — not an error, just informational for groups like
+        MOEX SAS, BET VRD, BIM MANAGER, CSPS, H51-ASC, etc.
+        """
+        self.add(AnomalyRecord(
+            anomaly_type="NO_GF_COLUMN",
+            severity="INFO",
+            source_type="GED",
+            source_file=source_file,
+            source_row_or_page=source_row,
+            document_key=document_key,
+            description=(
+                f"Mission '{mission_name}' (group '{group_name}') has no "
+                f"approbateur column in GrandFichier — response not written"
+            ),
+            raw_data={
+                "mission": mission_name,
+                "group": group_name,
+                "status": status,
+                "response_date": response_date,
+                "comment": comment,
+            },
+        ))
+
     def log_status_conflict(
         self, source_type: str, source_file: str, source_row: str,
         document_key: str, field: str, value_a: str, source_a: str,

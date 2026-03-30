@@ -3,6 +3,10 @@ JANSA GrandFichier Updater — Merge engine (V1)
 
 Consolidates matched CanonicalResponse records into DeliverableRecords.
 Applies source priority rules and detects conflicts.
+
+V2.0 change: VISA GLOBAL is no longer computed here as worst-tag.
+MOEX responses are passed through unchanged; the writer resolves them
+directly into the VISA GLOBAL column using mission_map group lookup.
 """
 import json
 import logging
@@ -11,7 +15,6 @@ from pathlib import Path
 from typing import Optional
 
 from processing.models import CanonicalResponse, DeliverableRecord, AnomalyRecord
-from processing.config import resolve_worst_tag
 from processing.dates import str_to_date, compare_dates
 from processing.anomalies import AnomalyLogger
 
@@ -127,15 +130,10 @@ def build_deliverables(
         # Representative record for document metadata
         rep = responses[0]
 
-        # Compute consolidated status (worst-case across all responses)
-        all_statuses = [cr.normalized_status for cr in responses if cr.normalized_status]
-        consolidated = resolve_worst_tag(all_statuses) or "NONE"
-
-        # Collect any conflicts logged during merge
-        conflicts: list[AnomalyRecord] = []
-
-        # For comments: collect all unique non-empty comments
-        # (merge engine doesn't write directly — writer does append logic)
+        # All responses are passed through unchanged.
+        # VISA GLOBAL is NOT computed here — the writer resolves MOEX responses
+        # directly into the VISA GLOBAL column (group lookup via mission_map).
+        # consolidated_status is kept for backwards compatibility but not used for writes.
 
         drec = DeliverableRecord(
             document_key=rep.document_key,
@@ -147,8 +145,8 @@ def build_deliverables(
             gf_sheet=sheet,
             gf_row=row_num,
             responses=responses,
-            conflicts=conflicts,
-            consolidated_status=consolidated,
+            conflicts=[],
+            consolidated_status="",  # not used — writer does group-based resolution
         )
         deliverables.append(drec)
 

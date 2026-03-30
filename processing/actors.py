@@ -39,9 +39,13 @@ def resolve_actor(actor_raw: Optional[str], actor_map: dict) -> tuple[dict, bool
 
 def load_mission_map(path: Path) -> dict:
     """
-    Load mission_map.json.
-    Returns a dict: GED mission name → {gf_names, gf_canonical, family}.
-    Strips _meta and _note keys.
+    Load mission_map.json (v2.0 bidirectional format).
+    Returns the full dict with all nested keys intact:
+      - ged_to_group: GED mission name → group name
+      - group_to_gf_appro: group name → list of GF approbateur name variants
+      - special_groups: group → "VISA_GLOBAL" | "SKIP"
+      - no_gf_column: list of groups with no GF column
+      - group_role: group → "primary" | "secondary" | "not_concerned"
     """
     with open(path, "r", encoding="utf-8") as f:
         mm = json.load(f)
@@ -49,6 +53,16 @@ def load_mission_map(path: Path) -> dict:
     mm.pop("_version", None)
     mm.pop("_note", None)
     return mm
+
+
+def get_mission_group(ged_mission: Optional[str], mission_map: dict) -> str:
+    """
+    Resolve a raw GED mission name to its unified group name.
+    Returns "" if not found in the mapping.
+    """
+    if not ged_mission:
+        return ""
+    return mission_map.get("ged_to_group", {}).get(str(ged_mission).strip(), "")
 
 
 def resolve_gf_approbateur(
@@ -59,33 +73,31 @@ def resolve_gf_approbateur(
     """
     Find the GrandFichier approbateur display name that matches a GED mission name.
 
-    Strategy:
-    1. Look up GED mission in mission_map to get candidate GF names.
-    2. Try to match each candidate against gf_row8_names (case-insensitive).
-    3. If a match is found, return (matched_gf_name, True).
-    4. If no match, return ("", False).
+    Strategy (v2.0 two-step lookup):
+    1. GED mission → group (via ged_to_group)
+    2. Group → candidate GF names (via group_to_gf_appro)
+    3. Match candidates against gf_row8_names (case-insensitive, then partial)
 
-    Args:
-        ged_mission: raw mission name from GED column 25
-        mission_map: loaded mission_map.json content
-        gf_row8_names: list of approbateur display names from GrandFichier row 8
+    Returns (matched_gf_name, True) if found, ("", False) otherwise.
     """
     if not ged_mission:
         return "", False
 
-    mission_key = str(ged_mission).strip()
-    entry = mission_map.get(mission_key)
-    if not entry:
+    group = get_mission_group(ged_mission, mission_map)
+    if not group:
         return "", False
 
-    candidates = entry.get("gf_names", [])
+    candidates = mission_map.get("group_to_gf_appro", {}).get(group, [])
+    if not candidates:
+        return "", False
+
     gf_lower = {name.lower(): name for name in gf_row8_names}
 
     for candidate in candidates:
         c_lower = candidate.lower()
         if c_lower in gf_lower:
             return gf_lower[c_lower], True
-        # Also try partial / contains matching
+        # Partial / contains matching as fallback
         for gf_name_lower, gf_name_orig in gf_lower.items():
             if c_lower in gf_name_lower or gf_name_lower in c_lower:
                 return gf_name_orig, True

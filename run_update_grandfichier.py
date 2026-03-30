@@ -108,12 +108,13 @@ def main():
     ged_records, ged_skipped = ingest_ged(ged_path, status_map)
     logger.info("  GED records: %d ingested", len(ged_records))
 
-    # ---- Step b: Ingest SAS (optional) ----
+    # ---- Step b: SAS (disabled — manual process) ----
     sas_records = []
     if sas_path:
-        logger.info("Step 2/7: Ingesting SAS extract...")
-        sas_records, _ = ingest_sas(sas_path, status_map)
-        logger.info("  SAS records: %d ingested", len(sas_records))
+        logger.warning(
+            "Step 2/7: SAS processing is manual — skipping. "
+            "The --sas flag is accepted but SAS records are not ingested in V2."
+        )
     else:
         logger.info("Step 2/7: SAS extract not provided — skipping")
 
@@ -143,16 +144,21 @@ def main():
     # Build lookup dict for writer
     gf_rows_by_sheet_row = {(r.sheet_name, r.row_number): r for r in gf_rows}
 
-    # ---- Step e: Match canonical responses to GrandFichier rows ----
-    logger.info("Step 5/7: Matching records to GrandFichier rows...")
-    all_canonical = ged_records + sas_records + pdf_records
+    from datetime import datetime as _dt
+    _ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+    output_gf_path       = output_dir / f"updated_grandfichier_{_ts}.xlsx"
+    output_evidence_path = output_dir / "evidence_export.csv"
+    output_anomaly_path  = output_dir / "anomaly_log.json"
+    output_match_path    = output_dir / "match_summary.csv"
+
     gf_index = GFIndex(gf_rows)
     match_summary = MatchSummary()
 
-    matched_records, unmatched_records = match_all(all_canonical, gf_index, match_summary)
+    # ---- Step 5a/6a: GED — match, consolidate, apply (authoritative bulk source) ----
+    logger.info("Step 5a/7: Matching GED records to GrandFichier rows...")
+    matched_ged, unmatched_ged = match_all(ged_records, gf_index, match_summary)
 
-    # Log unmatched as anomalies
-    for cr in unmatched_records:
+    for cr in unmatched_ged:
         anomaly_log.log_unmatched_ged(
             source_file=cr.source_file,
             source_row=cr.source_row_or_page,
@@ -164,33 +170,55 @@ def main():
 
     match_summary.log_summary()
 
-    # ---- Step f: Consolidate into DeliverableRecords ----
-    logger.info("Step 6/7: Consolidating records by deliverable...")
-    deliverables = build_deliverables(
-        matched_records, gf_rows_by_sheet_row, source_priority, anomaly_log
+    logger.info("Step 6a/7: Consolidating GED records by deliverable...")
+    deliverables_ged = build_deliverables(
+        matched_ged, gf_rows_by_sheet_row, source_priority, anomaly_log
     )
-    logger.info("  Deliverable records: %d", len(deliverables))
+    logger.info("  GED deliverable records: %d", len(deliverables_ged))
 
-    # ---- Step g: Apply updates to GrandFichier ----
-    logger.info("Step 7/7: Applying updates to GrandFichier...")
-    from datetime import datetime as _dt
-    _ts = _dt.now().strftime("%Y%m%d_%H%M%S")
-    output_gf_path       = output_dir / f"updated_grandfichier_{_ts}.xlsx"
-    output_evidence_path = output_dir / "evidence_export.csv"
-    output_anomaly_path  = output_dir / "anomaly_log.json"
-    output_match_path    = output_dir / "match_summary.csv"
-
+    logger.info("Step 7/7: Applying GED updates to GrandFichier...")
     evidence_records, fields_updated = apply_updates(
         source_grandfichier=gf_path,
-        deliverables=deliverables,
+        deliverables=deliverables_ged,
         gf_rows_by_sheet_row=gf_rows_by_sheet_row,
         mission_map=mission_map,
         source_priority=source_priority,
         anomaly_logger=anomaly_log,
         output_path=output_gf_path,
-        unmatched_records=unmatched_records,
+        unmatched_records=unmatched_ged,
         gf_rows=gf_rows,
+        pdf_only=False,
     )
+
+    # ---- Step 5b/6b: PDF — match and apply OBSERVATIONS only (complement, never contradict) ----
+    if pdf_records:
+        logger.info("Step 5b/7: Matching PDF records to GrandFichier rows...")
+        matched_pdf, unmatched_pdf = match_all(pdf_records, gf_index, match_summary)
+
+        logger.info("Step 6b/7: Consolidating PDF records by deliverable...")
+        deliverables_pdf = build_deliverables(
+            matched_pdf, gf_rows_by_sheet_row, source_priority, anomaly_log
+        )
+        logger.info("  PDF deliverable records: %d", len(deliverables_pdf))
+
+        logger.info("Step 7b/7: Applying PDF OBSERVATIONS to GrandFichier (append-only)...")
+        evidence_pdf, fields_pdf = apply_updates(
+            source_grandfichier=output_gf_path,  # chain from GED output
+            deliverables=deliverables_pdf,
+            gf_rows_by_sheet_row=gf_rows_by_sheet_row,
+            mission_map=mission_map,
+            source_priority=source_priority,
+            anomaly_logger=anomaly_log,
+            output_path=output_gf_path,
+            pdf_only=True,
+        )
+        evidence_records.extend(evidence_pdf)
+        fields_updated += fields_pdf
+    else:
+        logger.info("Step 5b-7b/7: No PDF records — skipping PDF pass")
+
+    # store for summary
+    unmatched_records = unmatched_ged
 
     # ---- Write outputs ----
     export_evidence_csv(evidence_records, output_evidence_path)
@@ -208,8 +236,8 @@ def main():
     print(f"  SAS records ingested:         {len(sas_records):>6}")
     print(f"  PDF records ingested:         {len(pdf_records):>6}")
     print(f"  GrandFichier rows indexed:    {len(gf_rows):>6}")
-    print(f"  Records matched:              {match_summary.total_matched:>6}")
-    print(f"  Records unmatched:            {match_summary.total_unmatched:>6}")
+    print(f"  GED records matched:          {match_summary.total_matched:>6}")
+    print(f"  GED records unmatched:        {match_summary.total_unmatched:>6}")
     print(f"  Fields updated:               {fields_updated:>6}")
     print(f"  Total anomalies:              {total_anomalies:>6}")
     if anomaly_counts:
