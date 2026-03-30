@@ -76,6 +76,17 @@ def normalize_text(s: Optional[str]) -> str:
     return " ".join(str(s).strip().upper().split())
 
 
+def normalize_key(raw_key: str) -> str:
+    """
+    Strip separators for comparison (_, -, space). Case-sensitive (keys are uppercase).
+    Applied to BOTH GED keys and GrandFichier column A keys before any comparison.
+    DO NOT use the normalized value in evidence_export or anomaly_log — matching only.
+    """
+    if not raw_key:
+        return ""
+    return raw_key.replace('_', '').replace('-', '').replace(' ', '').strip()
+
+
 # ---------------------------------------------------------------------------
 # Composite key building
 # ---------------------------------------------------------------------------
@@ -86,6 +97,8 @@ def build_ged_key(row_values: dict) -> str:
     Format: AFFAIRE + PROJET + BATIMENT + PHASE + EMETTEUR + SPECIALITE + LOT + TYPE_DOC + ZONE + NIVEAU + NUMERO
 
     row_values keys: affaire, projet, batiment, phase, emetteur, specialite, lot, type_doc, zone, niveau, numero
+    The returned key is already separator-normalized (via normalize_key) for matching.
+    The raw concatenation (before normalization) is stored separately as-is in document_key for evidence/log.
     """
     parts = [
         _s(row_values.get("affaire")),
@@ -100,17 +113,18 @@ def build_ged_key(row_values: dict) -> str:
         _s(row_values.get("niveau")),
         _s(row_values.get("numero")),
     ]
-    return "".join(parts)
+    raw = "".join(parts)
+    return normalize_key(raw)
 
 
 def build_gf_key(cell_value: Optional[str]) -> str:
     """
     Normalize a GrandFichier DOCUMENT column A value for comparison.
-    Just strips whitespace and uppercases.
+    Strips separators (_, -, space) in addition to whitespace + uppercase.
     """
     if not cell_value:
         return ""
-    return str(cell_value).strip().upper()
+    return normalize_key(str(cell_value).strip().upper())
 
 
 def _s(v) -> str:

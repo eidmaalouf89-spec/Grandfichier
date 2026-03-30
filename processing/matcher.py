@@ -16,7 +16,7 @@ from processing.models import CanonicalResponse, GFRow
 from processing.canonical import (
     build_gf_key, build_ged_key,
     build_level2_key, build_level3_key, build_level4_key,
-    normalize_numero, normalize_lot, _s,
+    normalize_numero, normalize_lot, normalize_key, _s,
 )
 from processing.config import (
     CONFIDENCE_EXACT, CONFIDENCE_FUZZY, CONFIDENCE_PARTIAL, CONFIDENCE_NONE,
@@ -75,8 +75,8 @@ class GFIndex:
         Try all 4 matching levels. Updates cr.confidence and cr.match_strategy in place.
         Returns matched GFRow or None.
         """
-        # Level 1: full key
-        key1 = cr.document_key.upper() if cr.document_key else ""
+        # Level 1: full key — normalize both sides (strip _, -, space)
+        key1 = normalize_key(cr.document_key.upper()) if cr.document_key else ""
         if key1 and key1 in self._l1:
             cr.confidence = CONFIDENCE_EXACT
             cr.match_strategy = MATCH_LEVEL_1

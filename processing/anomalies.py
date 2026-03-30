@@ -27,16 +27,33 @@ class AnomalyLogger:
         self, source_file: str, source_row: str,
         document_key: str, raw_data: dict
     ) -> None:
-        self.add(AnomalyRecord(
-            anomaly_type="UNMATCHED_GED",
-            severity="WARNING",
-            source_type="GED",
-            source_file=source_file,
-            source_row_or_page=source_row,
-            document_key=document_key,
-            description="No matching row found in GrandFichier after all 4 cascade levels",
-            raw_data=raw_data,
-        ))
+        """
+        Classify unmatched GED records:
+        - Empty key → EMPTY_KEY / DEBUG (data quality issue in GED)
+        - Valid key, no GF match → NEW_DOCUMENT / INFO (expected: new submittal not yet in GF)
+        """
+        if not document_key or not document_key.strip():
+            self.add(AnomalyRecord(
+                anomaly_type="EMPTY_KEY",
+                severity="DEBUG",
+                source_type="GED",
+                source_file=source_file,
+                source_row_or_page=source_row,
+                document_key="",
+                description="GED row has no document key fields populated",
+                raw_data=raw_data,
+            ))
+        else:
+            self.add(AnomalyRecord(
+                anomaly_type="NEW_DOCUMENT",
+                severity="INFO",
+                source_type="GED",
+                source_file=source_file,
+                source_row_or_page=source_row,
+                document_key=document_key,
+                description="New submittal — no corresponding row in GrandFichier",
+                raw_data=raw_data,
+            ))
 
     def log_unmatched_mission(
         self, source_file: str, source_row: str,

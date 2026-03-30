@@ -25,10 +25,13 @@ SOURCE_PRIORITY_PATH = DATA_DIR / "source_priority.json"
 # ---------------------------------------------------------------------------
 # GED Source sheet configuration
 # ---------------------------------------------------------------------------
-# Primary detailed sheet (one row per document × mission response)
-GED_SHEET_PRIMARY    = "Vue détaillée des documents"
-# Variant sheet (same structure + one extra column at end)
-GED_SHEET_VARIANT    = "Vue détaillée des documents 1"
+# Primary detailed sheet — FLAT layout: every row fully populated.
+# "Vue détaillée des documents 1" has one extra col (Type de document, col 35)
+# but same core schema. Use this sheet: all 13,048 rows are self-contained.
+GED_SHEET_PRIMARY    = "Vue détaillée des documents 1"
+# Fallback sheet — parent/child layout: metadata cols null on child rows.
+# Only used if PRIMARY is absent.
+GED_SHEET_VARIANT    = "Vue détaillée des documents"
 # Secondary summary sheet (one row per document, missions as columns)
 GED_SHEET_GLOBAL     = "Vue globale des documents"
 

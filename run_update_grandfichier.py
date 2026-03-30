@@ -173,7 +173,9 @@ def main():
 
     # ---- Step g: Apply updates to GrandFichier ----
     logger.info("Step 7/7: Applying updates to GrandFichier...")
-    output_gf_path       = output_dir / "updated_grandfichier.xlsx"
+    from datetime import datetime as _dt
+    _ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+    output_gf_path       = output_dir / f"updated_grandfichier_{_ts}.xlsx"
     output_evidence_path = output_dir / "evidence_export.csv"
     output_anomaly_path  = output_dir / "anomaly_log.json"
     output_match_path    = output_dir / "match_summary.csv"
@@ -186,6 +188,8 @@ def main():
         source_priority=source_priority,
         anomaly_logger=anomaly_log,
         output_path=output_gf_path,
+        unmatched_records=unmatched_records,
+        gf_rows=gf_rows,
     )
 
     # ---- Write outputs ----
