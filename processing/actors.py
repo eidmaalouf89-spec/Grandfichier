@@ -1,12 +1,44 @@
 """
-JANSA GrandFichier Updater — Actor normalization (V1)
+JANSA GrandFichier Updater — Actor normalization (V1 / PATCH 3.0)
 Adapted from OLD processing/actors.py — unchanged logic.
 Loads actor_map.json and resolves raw GED mission names to canonical entries.
+
+V3.0 additions:
+  - MOEX_MISSIONS set
+  - has_moex_mission() for MOEX-only filter
 """
 import json
 from pathlib import Path
 from typing import Optional
 from processing.config import DEFAULT_ACTOR_RELEVANT, DEFAULT_ACTOR_FAMILY
+
+# ---------------------------------------------------------------------------
+# MOEX mission names — these are the four variants of Maîtrise d'Oeuvre EXE
+# (PATCH 3.0 PATCH 2)
+# ---------------------------------------------------------------------------
+MOEX_MISSIONS = {
+    "0-Maître d'Oeuvre EXE",
+    "A-Maître d'Oeuvre EXE",
+    "B-Maître d'Oeuvre EXE",
+    "H-Maître d'Oeuvre EXE",
+}
+
+
+def has_moex_mission(
+    record,
+    moex_docs: set,
+) -> bool:
+    """
+    Check if this document (identified by NUMERO + INDICE) has at least one MOEX response.
+
+    Args:
+        record: CanonicalResponse record to check
+        moex_docs: Pre-built set of (numero, indice) pairs that have a MOEX mission.
+                   Built once before filtering: see run_update_grandfichier.py.
+
+    Returns True if the document should be processed (has a MOEX response).
+    """
+    return (record.numero, record.indice) in moex_docs
 
 
 def load_actor_map(path: Path) -> dict:

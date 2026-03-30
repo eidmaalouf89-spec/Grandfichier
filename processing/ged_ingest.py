@@ -20,7 +20,7 @@ from processing.config import (
 from processing.models import CanonicalResponse
 from processing.dates import parse_date, date_to_str, parse_delay
 from processing.statuses import get_normalized_code
-from processing.canonical import build_ged_key, normalize_numero, _s
+from processing.canonical import normalize_numero, normalize_key, _s
 
 logger = logging.getLogger(__name__)
 
@@ -120,13 +120,10 @@ def ingest_ged(
         # Normalize numero
         numero = normalize_numero(str(numero_raw) if numero_raw is not None else "")
 
-        # Build composite key
-        doc_key = build_ged_key({
-            "affaire": affaire, "projet": projet, "batiment": batiment,
-            "phase": phase, "emetteur": emetteur, "specialite": specialite,
-            "lot": lot, "type_doc": type_doc, "zone": zone,
-            "niveau": niveau, "numero": numero_raw,
-        })
+        # Build display key for traceability (V3.0: not used for matching)
+        doc_key = normalize_key(
+            f"{_s(lot)}/{_s(type_doc)}/{_s(str(numero_raw) if numero_raw is not None else '')}/{_s(indice)}"
+        )
 
         # Normalize status
         norm_status = get_normalized_code(reponse_raw, status_map)

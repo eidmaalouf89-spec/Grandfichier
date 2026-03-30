@@ -23,6 +23,28 @@ class AnomalyLogger:
                    record.anomaly_type, record.severity,
                    record.document_key, record.description)
 
+    def log_not_moex_responsibility(
+        self, source_file: str, source_row: str,
+        document_key: str, numero: str, indice: str, mission: str
+    ) -> None:
+        """
+        Document has no MOEX mission — not processed by this pipeline.
+        Logged as NOT_MOEX_RESPONSIBILITY / DEBUG (normal and expected for BET-only docs).
+        """
+        self.add(AnomalyRecord(
+            anomaly_type="NOT_MOEX_RESPONSIBILITY",
+            severity="DEBUG",
+            source_type="GED",
+            source_file=source_file,
+            source_row_or_page=source_row,
+            document_key=document_key,
+            description=(
+                f"Document ({numero}/{indice}) has no MOEX mission — "
+                f"skipped (mission: '{mission}')"
+            ),
+            raw_data={"numero": numero, "indice": indice, "mission": mission},
+        ))
+
     def log_unmatched_ged(
         self, source_file: str, source_row: str,
         document_key: str, raw_data: dict

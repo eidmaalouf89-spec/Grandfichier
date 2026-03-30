@@ -1,145 +1,186 @@
 """
-JANSA GrandFichier Updater — 4-level cascading key matching engine (V1)
+JANSA GrandFichier Updater — NUMERO-anchored matching engine (V3.0)
 
-Matches CanonicalResponse records to GrandFichier rows.
+Replaces 4-level composite-key cascade with NUMERO-anchored field scoring.
 
-Level 1: Full composite key match (EXACT)
-Level 2: LOT + TYPE_DOC + NUMERO (normalized, FUZZY)
-Level 3: TYPE_DOC + NUMERO within same sheet (PARTIAL)
-Level 4: NUMERO-only with trailing-alpha stripping (PARTIAL)
-No match → UNMATCHED
+Step 1: Index GF rows by normalized NUMERO
+Step 2: Find GED candidates by NUMERO (with single-embedded-zero tolerance)
+Step 3: Score candidates by field comparison; pick best
+Step 4: No match → UNMATCHED
 """
 import logging
 from typing import Optional
 
 from processing.models import CanonicalResponse, GFRow
-from processing.canonical import (
-    build_gf_key, build_ged_key,
-    build_level2_key, build_level3_key, build_level4_key,
-    normalize_numero, normalize_lot, normalize_key, _s,
-)
-from processing.config import (
-    CONFIDENCE_EXACT, CONFIDENCE_FUZZY, CONFIDENCE_PARTIAL, CONFIDENCE_NONE,
-    MATCH_LEVEL_1, MATCH_LEVEL_2, MATCH_LEVEL_3, MATCH_LEVEL_4, MATCH_NONE,
-)
+from processing.canonical import normalize_numero, normalize_lot
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Confidence levels (PATCH 3.0)
+# ---------------------------------------------------------------------------
+CONFIDENCE_HIGH   = "HIGH"
+CONFIDENCE_MEDIUM = "MEDIUM"
+CONFIDENCE_LOW    = "LOW"
+CONFIDENCE_NONE   = "UNMATCHED"
 
-class GFIndex:
+MATCH_NUMERO_HIGH   = "NUMERO_HIGH_SCORE"
+MATCH_NUMERO_MEDIUM = "NUMERO_MEDIUM_SCORE"
+MATCH_NUMERO_LOW    = "NUMERO_LOW_SCORE"
+MATCH_NONE          = "UNMATCHED"
+
+# Field score weights
+SCORE_INDICE     = 10
+SCORE_EMETTEUR   = 5
+SCORE_TYPE_DOC   = 3
+SCORE_LOT        = 2
+SCORE_SPECIALITE = 1
+SCORE_BATIMENT   = 1
+
+
+class GFNumeroIndex:
     """
-    Pre-built index of GrandFichier rows for fast matching at all 4 cascade levels.
-    Build once per pipeline run.
+    Pre-built index of GrandFichier rows by normalized NUMERO.
+
+    Index structure: dict[str, list[GFRow]]
+    NUMERO is the real document anchor. Fields are used only for disambiguation
+    when multiple GF rows share the same NUMERO.
     """
 
     def __init__(self, gf_rows: list[GFRow]):
-        # Level 1: full composite key → GFRow
-        self._l1: dict[str, GFRow] = {}
-        # Level 2: sheet → (lot_norm + type_doc + numero_norm) → GFRow
-        self._l2: dict[str, dict[str, GFRow]] = {}
-        # Level 3: sheet → (type_doc + numero_norm) → GFRow
-        self._l3: dict[str, dict[str, GFRow]] = {}
-        # Level 4: sheet → numero_stripped → GFRow
-        self._l4: dict[str, dict[str, GFRow]] = {}
-
+        # normalized NUMERO → list of GF rows with that NUMERO
+        self._index: dict[str, list[GFRow]] = {}
         for row in gf_rows:
-            key1 = build_gf_key(row.document_key)
-            if key1:
-                self._l1[key1] = row
-
-            sheet = row.sheet_name
-            if sheet not in self._l2:
-                self._l2[sheet] = {}
-                self._l3[sheet] = {}
-                self._l4[sheet] = {}
-
-            key2 = build_level2_key(row.lot, row.type_doc, row.numero)
-            if key2:
-                self._l2[sheet][key2] = row
-
-            key3 = build_level3_key(row.type_doc, row.numero)
-            if key3:
-                self._l3[sheet][key3] = row
-
-            key4 = build_level4_key(row.numero)
-            if key4:
-                self._l4[sheet][key4] = row
+            num = normalize_numero(row.numero)
+            if num:
+                self._index.setdefault(num, []).append(row)
 
         logger.info(
-            "GFIndex built: %d L1 keys, %d sheets indexed",
-            len(self._l1), len(self._l2),
+            "GFNumeroIndex built: %d unique NUMEROs from %d rows",
+            len(self._index), len(gf_rows),
         )
+
+    def _find_candidates(self, ged_numero: str) -> list[GFRow]:
+        """
+        Find GF candidates for a normalized GED NUMERO.
+        Applies single-embedded-zero tolerance when no direct match is found.
+        """
+        # Strict match
+        candidates = self._index.get(ged_numero, [])
+        if candidates:
+            return candidates
+
+        # Tolerance A: remove one internal '0' from GED NUMERO
+        for i, c in enumerate(ged_numero):
+            if c == '0' and i > 0:
+                variant = ged_numero[:i] + ged_numero[i + 1:]
+                if variant in self._index:
+                    return self._index[variant]
+
+        # Tolerance B: GF has an extra '0' that, when removed, equals GED NUMERO
+        for gf_num, rows in self._index.items():
+            for i, c in enumerate(gf_num):
+                if c == '0' and i > 0:
+                    if gf_num[:i] + gf_num[i + 1:] == ged_numero:
+                        return rows
+                    break  # only test the first internal zero per gf_num
+
+        return []
+
+    def _score(self, cr: CanonicalResponse, gf_row: GFRow) -> int:
+        """
+        Score a GF candidate row against a GED CanonicalResponse.
+        Fields not directly available on GFRow are checked via substring on document_key.
+        """
+        score = 0
+        doc_key_upper = gf_row.document_key.upper() if gf_row.document_key else ""
+
+        # INDICE +10 — direct field comparison
+        if cr.indice and gf_row.indice:
+            if str(cr.indice).strip().upper() == str(gf_row.indice).strip().upper():
+                score += SCORE_INDICE
+
+        # EMETTEUR +5 — substring presence in composite document key
+        if cr.emetteur and doc_key_upper:
+            if str(cr.emetteur).strip().upper() in doc_key_upper:
+                score += SCORE_EMETTEUR
+
+        # TYPE_DOC +3 — direct field comparison
+        if cr.type_doc and gf_row.type_doc:
+            if str(cr.type_doc).strip().upper() == str(gf_row.type_doc).strip().upper():
+                score += SCORE_TYPE_DOC
+
+        # LOT +2 — normalized comparison (strip leading alpha prefix)
+        if cr.lot and gf_row.lot:
+            if normalize_lot(cr.lot) == normalize_lot(gf_row.lot):
+                score += SCORE_LOT
+
+        # SPECIALITE +1 — substring in document_key (field not on GFRow)
+        if hasattr(cr, 'specialite') and cr.specialite and doc_key_upper:
+            if str(cr.specialite).strip().upper() in doc_key_upper:
+                score += SCORE_SPECIALITE
+
+        # BATIMENT +1 — substring in document_key
+        if cr.batiment and doc_key_upper:
+            if str(cr.batiment).strip().upper() in doc_key_upper:
+                score += SCORE_BATIMENT
+
+        return score
 
     def match(self, cr: CanonicalResponse) -> Optional[GFRow]:
         """
-        Try all 4 matching levels. Updates cr.confidence and cr.match_strategy in place.
-        Returns matched GFRow or None.
+        Match a CanonicalResponse to the best-scoring GFRow.
+        Updates cr.confidence and cr.match_strategy in place.
+        Returns the matched GFRow or None.
         """
-        # Level 1: full key — normalize both sides (strip _, -, space)
-        key1 = normalize_key(cr.document_key.upper()) if cr.document_key else ""
-        if key1 and key1 in self._l1:
-            cr.confidence = CONFIDENCE_EXACT
-            cr.match_strategy = MATCH_LEVEL_1
-            return self._l1[key1]
+        ged_numero = normalize_numero(cr.numero)
+        if not ged_numero:
+            cr.confidence = CONFIDENCE_NONE
+            cr.match_strategy = MATCH_NONE
+            return None
 
-        # Level 2: LOT + TYPE_DOC + NUMERO across all sheets
-        key2 = build_level2_key(cr.lot, cr.type_doc, cr.numero)
-        if key2:
-            # Try current sheet first, then all sheets
-            candidates = self._search_all_sheets(self._l2, key2)
-            if candidates:
-                best = candidates[0]
-                cr.confidence = CONFIDENCE_FUZZY
-                cr.match_strategy = MATCH_LEVEL_2
-                return best
+        candidates = self._find_candidates(ged_numero)
+        if not candidates:
+            cr.confidence = CONFIDENCE_NONE
+            cr.match_strategy = MATCH_NONE
+            return None
 
-        # Level 3: TYPE_DOC + NUMERO
-        key3 = build_level3_key(cr.type_doc, cr.numero)
-        if key3:
-            candidates = self._search_all_sheets(self._l3, key3)
-            if candidates:
-                best = candidates[0]
-                cr.confidence = CONFIDENCE_PARTIAL
-                cr.match_strategy = MATCH_LEVEL_3
-                return best
+        if len(candidates) == 1:
+            best_row = candidates[0]
+            best_score = self._score(cr, best_row)
+        else:
+            # Score all candidates, pick highest
+            scored = [(self._score(cr, row), row) for row in candidates]
+            scored.sort(key=lambda x: x[0], reverse=True)
+            best_score, best_row = scored[0]
 
-        # Level 4: NUMERO-only stripped
-        key4 = build_level4_key(cr.numero)
-        if key4 and len(key4) >= 4:   # avoid matching on trivially short numbers
-            candidates = self._search_all_sheets(self._l4, key4)
-            if candidates:
-                best = candidates[0]
-                cr.confidence = CONFIDENCE_PARTIAL
-                cr.match_strategy = MATCH_LEVEL_4
-                return best
+        # Assign confidence tier from score
+        if best_score >= 15:
+            cr.confidence = CONFIDENCE_HIGH
+            cr.match_strategy = MATCH_NUMERO_HIGH
+        elif best_score >= 10:
+            cr.confidence = CONFIDENCE_MEDIUM
+            cr.match_strategy = MATCH_NUMERO_MEDIUM
+        else:
+            cr.confidence = CONFIDENCE_LOW
+            cr.match_strategy = MATCH_NUMERO_LOW
+            logger.warning(
+                "Low-confidence match (score=%d): doc=%s → sheet=%s row=%d",
+                best_score, cr.document_key, best_row.sheet_name, best_row.row_number,
+            )
 
-        cr.confidence = CONFIDENCE_NONE
-        cr.match_strategy = MATCH_NONE
-        return None
-
-    def _search_all_sheets(
-        self,
-        index: dict[str, dict[str, GFRow]],
-        key: str,
-    ) -> list[GFRow]:
-        """Search all sheets in the index for a given key. Returns list of matches."""
-        results = []
-        for sheet_idx in index.values():
-            if key in sheet_idx:
-                results.append(sheet_idx[key])
-        return results
+        return best_row
 
 
 class MatchSummary:
-    """Tracks match statistics per level."""
+    """Tracks match statistics per confidence tier."""
 
     def __init__(self):
         self._counts: dict[str, int] = {
-            MATCH_LEVEL_1: 0,
-            MATCH_LEVEL_2: 0,
-            MATCH_LEVEL_3: 0,
-            MATCH_LEVEL_4: 0,
-            MATCH_NONE:    0,
+            MATCH_NUMERO_HIGH:   0,
+            MATCH_NUMERO_MEDIUM: 0,
+            MATCH_NUMERO_LOW:    0,
+            MATCH_NONE:          0,
         }
 
     def record(self, strategy: str) -> None:
@@ -168,7 +209,7 @@ class MatchSummary:
                 "count": self._counts.get(level, 0),
                 "percentage": f"{100 * self._counts.get(level, 0) / total:.1f}%",
             }
-            for level in [MATCH_LEVEL_1, MATCH_LEVEL_2, MATCH_LEVEL_3, MATCH_LEVEL_4, MATCH_NONE]
+            for level in [MATCH_NUMERO_HIGH, MATCH_NUMERO_MEDIUM, MATCH_NUMERO_LOW, MATCH_NONE]
         ]
 
     def log_summary(self) -> None:
@@ -179,11 +220,11 @@ class MatchSummary:
 
 def match_all(
     canonical_records: list[CanonicalResponse],
-    gf_index: GFIndex,
+    gf_index: GFNumeroIndex,
     summary: Optional[MatchSummary] = None,
 ) -> tuple[list[CanonicalResponse], list[CanonicalResponse]]:
     """
-    Run matching for all CanonicalResponse records.
+    Run NUMERO-anchored matching for all CanonicalResponse records.
     Updates each record's .confidence, .match_strategy, .gf_sheet, .gf_row in place.
 
     Returns:

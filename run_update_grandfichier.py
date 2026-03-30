@@ -88,7 +88,7 @@ def main():
     from processing.sas_ingest import ingest_sas
     from processing.pdf_ingest import ingest_pdf_folder
     from processing.grandfichier_reader import read_grandfichier
-    from processing.matcher import GFIndex, MatchSummary, match_all
+    from processing.matcher import GFNumeroIndex, MatchSummary, match_all
     from processing.merge_engine import build_deliverables, load_source_priority
     from processing.grandfichier_writer import (
         apply_updates, export_evidence_csv, export_match_summary_csv
@@ -106,7 +106,42 @@ def main():
     # ---- Step a: Ingest GED ----
     logger.info("Step 1/7: Ingesting GED dump...")
     ged_records, ged_skipped = ingest_ged(ged_path, status_map)
-    logger.info("  GED records: %d ingested", len(ged_records))
+    ged_total_ingested = len(ged_records)
+    logger.info("  GED records: %d ingested", ged_total_ingested)
+
+    # ---- Step 1b: MOEX-only filter (PATCH 3.0) ----
+    # Only process documents that have at least one MOEX mission response.
+    # Documents reviewed only by BET/BC (no MOEX) are skipped entirely.
+    from processing.actors import MOEX_MISSIONS
+    logger.info("Step 1b/7: Applying MOEX-only filter...")
+    moex_docs = set()
+    for r in ged_records:
+        if r.mission in MOEX_MISSIONS:
+            moex_docs.add((r.numero, r.indice))
+
+    ged_records_skipped = [r for r in ged_records if (r.numero, r.indice) not in moex_docs]
+    ged_records = [r for r in ged_records if (r.numero, r.indice) in moex_docs]
+
+    # Log skipped records as NOT_MOEX_RESPONSIBILITY
+    _logged_not_moex = set()
+    for r in ged_records_skipped:
+        key = (r.numero, r.indice)
+        if key not in _logged_not_moex:
+            anomaly_log.log_not_moex_responsibility(
+                source_file=r.source_file,
+                source_row=r.source_row_or_page,
+                document_key=r.document_key,
+                numero=r.numero,
+                indice=r.indice,
+                mission=r.mission,
+            )
+            _logged_not_moex.add(key)
+
+    logger.info(
+        "  MOEX filter: %d records kept (%d unique docs), %d records skipped (%d unique docs)",
+        len(ged_records), len(moex_docs),
+        len(ged_records_skipped), len(_logged_not_moex),
+    )
 
     # ---- Step b: SAS (disabled — manual process) ----
     sas_records = []
@@ -151,7 +186,7 @@ def main():
     output_anomaly_path  = output_dir / "anomaly_log.json"
     output_match_path    = output_dir / "match_summary.csv"
 
-    gf_index = GFIndex(gf_rows)
+    gf_index = GFNumeroIndex(gf_rows)
     match_summary = MatchSummary()
 
     # ---- Step 5a/6a: GED — match, consolidate, apply (authoritative bulk source) ----
@@ -232,7 +267,9 @@ def main():
     print("\n" + "=" * 60)
     print("JANSA GrandFichier Updater V1 — RUN COMPLETE")
     print("=" * 60)
-    print(f"  GED records ingested:         {len(ged_records):>6}")
+    print(f"  GED records ingested (raw):   {ged_total_ingested:>6}")
+    print(f"  GED records (MOEX-filtered):  {len(ged_records):>6}")
+    print(f"  GED records skipped (no MOEX):{len(ged_records_skipped):>6}")
     print(f"  SAS records ingested:         {len(sas_records):>6}")
     print(f"  PDF records ingested:         {len(pdf_records):>6}")
     print(f"  GrandFichier rows indexed:    {len(gf_rows):>6}")
