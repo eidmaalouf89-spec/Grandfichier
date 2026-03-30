@@ -1,0 +1,75 @@
+{
+  "_meta": "Maps GED mission names (col 25 'Mission') to GrandFichier Row 8 approbateur display names. One GED mission may match multiple GF display name variants across different sheets. ASSUMPTION: must be validated against actual GrandFichier file.",
+  "_version": "V1 — initial mapping based on MISSION_GROUPING from OLD repo and known GF approbateur names",
+
+  "0-Maître d'Oeuvre EXE":  {"gf_names": ["MOEX GEMO", "GEMO MOE", "MOEX"], "gf_canonical": "MOEX GEMO", "family": "moe"},
+  "A-Maître d'Oeuvre EXE":  {"gf_names": ["MOEX GEMO", "GEMO MOE", "MOEX"], "gf_canonical": "MOEX GEMO", "family": "moe"},
+  "B-Maître d'Oeuvre EXE":  {"gf_names": ["MOEX GEMO", "GEMO MOE", "MOEX"], "gf_canonical": "MOEX GEMO", "family": "moe"},
+  "H-Maître d'Oeuvre EXE":  {"gf_names": ["MOEX GEMO", "GEMO MOE", "MOEX"], "gf_canonical": "MOEX GEMO", "family": "moe"},
+
+  "0-ARCHITECTE":           {"gf_names": ["ARCHI MOX", "ARCHITECTE", "ARCHI"], "gf_canonical": "ARCHI MOX", "family": "archi"},
+  "A-ARCHITECTE":           {"gf_names": ["ARCHI MOX", "ARCHITECTE", "ARCHI"], "gf_canonical": "ARCHI MOX", "family": "archi"},
+  "B-ARCHITECTE":           {"gf_names": ["ARCHI MOX", "ARCHITECTE", "ARCHI"], "gf_canonical": "ARCHI MOX", "family": "archi"},
+  "H-ARCHITECTE":           {"gf_names": ["ARCHI MOX", "ARCHITECTE", "ARCHI"], "gf_canonical": "ARCHI MOX", "family": "archi"},
+
+  "0-BET Structure":        {"gf_names": ["BET STR-TERRELL", "BET EGIS", "BET STRUCTURE"], "gf_canonical": "BET STR-TERRELL", "family": "bet"},
+  "A-BET Structure":        {"gf_names": ["BET STR-TERRELL", "BET EGIS", "BET STRUCTURE"], "gf_canonical": "BET STR-TERRELL", "family": "bet"},
+  "B-BET Structure":        {"gf_names": ["BET STR-TERRELL", "BET EGIS", "BET STRUCTURE"], "gf_canonical": "BET STR-TERRELL", "family": "bet"},
+  "H-BET Structure":        {"gf_names": ["BET STR-TERRELL", "BET EGIS", "BET STRUCTURE"], "gf_canonical": "BET STR-TERRELL", "family": "bet"},
+
+  "0-Bureau de Contrôle":   {"gf_names": ["BC SOCOTEC", "SOCOTEC", "BUREAU DE CONTROLE"], "gf_canonical": "BC SOCOTEC", "family": "bdc"},
+
+  "0-AMO HQE":              {"gf_names": ["AMO HQE LE SOMMER", "AMO HQE"], "gf_canonical": "AMO HQE LE SOMMER", "family": "amo"},
+  "A-AMO HQE":              {"gf_names": ["AMO HQE LE SOMMER", "AMO HQE"], "gf_canonical": "AMO HQE LE SOMMER", "family": "amo"},
+  "B-AMO HQE":              {"gf_names": ["AMO HQE LE SOMMER", "AMO HQE"], "gf_canonical": "AMO HQE LE SOMMER", "family": "amo"},
+  "H-AMO HQE":              {"gf_names": ["AMO HQE LE SOMMER", "AMO HQE"], "gf_canonical": "AMO HQE LE SOMMER", "family": "amo"},
+
+  "0-BET Géotech":          {"gf_names": ["BET GEOLIA - G4", "BET GEOLIA"], "gf_canonical": "BET GEOLIA - G4", "family": "bet"},
+
+  "0-BET Acoustique":       {"gf_names": ["ACOUSTICIEN AVLS", "BET ACOUSTIQUE"], "gf_canonical": "ACOUSTICIEN AVLS", "family": "bet"},
+  "A-BET Acoustique":       {"gf_names": ["ACOUSTICIEN AVLS", "BET ACOUSTIQUE"], "gf_canonical": "ACOUSTICIEN AVLS", "family": "bet"},
+  "B-BET Acoustique":       {"gf_names": ["ACOUSTICIEN AVLS", "BET ACOUSTIQUE"], "gf_canonical": "ACOUSTICIEN AVLS", "family": "bet"},
+  "H-BET Acoustique":       {"gf_names": ["ACOUSTICIEN AVLS", "BET ACOUSTIQUE"], "gf_canonical": "ACOUSTICIEN AVLS", "family": "bet"},
+
+  "0-BET POL":              {"gf_names": ["BET POLLUTION DIE", "POLLUTION DIE", "BET POL"], "gf_canonical": "BET POLLUTION DIE", "family": "bet"},
+
+  "0-BET CVC":              {"gf_names": ["BET CVC", "BET FLUIDES"], "gf_canonical": "BET CVC", "family": "bet"},
+  "A-BET CVC":              {"gf_names": ["BET CVC", "BET FLUIDES"], "gf_canonical": "BET CVC", "family": "bet"},
+  "B-BET CVC":              {"gf_names": ["BET CVC", "BET FLUIDES"], "gf_canonical": "BET CVC", "family": "bet"},
+  "H-BET CVC":              {"gf_names": ["BET CVC", "BET FLUIDES"], "gf_canonical": "BET CVC", "family": "bet"},
+
+  "0-BET Electricité":      {"gf_names": ["BET ELEC", "BET ELECTRICITE"], "gf_canonical": "BET ELEC", "family": "bet"},
+  "A-BET Electricité":      {"gf_names": ["BET ELEC", "BET ELECTRICITE"], "gf_canonical": "BET ELEC", "family": "bet"},
+  "B-BET Electricité":      {"gf_names": ["BET ELEC", "BET ELECTRICITE"], "gf_canonical": "BET ELEC", "family": "bet"},
+  "H-BET Electricité":      {"gf_names": ["BET ELEC", "BET ELECTRICITE"], "gf_canonical": "BET ELEC", "family": "bet"},
+
+  "0-BET Plomberie":        {"gf_names": ["BET PLB", "BET PLOMBERIE"], "gf_canonical": "BET PLB", "family": "bet"},
+  "A-BET Plomberie":        {"gf_names": ["BET PLB", "BET PLOMBERIE"], "gf_canonical": "BET PLB", "family": "bet"},
+  "B-BET Plomberie":        {"gf_names": ["BET PLB", "BET PLOMBERIE"], "gf_canonical": "BET PLB", "family": "bet"},
+  "H-BET Plomberie":        {"gf_names": ["BET PLB", "BET PLOMBERIE"], "gf_canonical": "BET PLB", "family": "bet"},
+
+  "0-BET SPK":              {"gf_names": ["BET SPK"], "gf_canonical": "BET SPK", "family": "bet"},
+
+  "0-BET Ascenseur":        {"gf_names": ["BET ASC", "BET ASCENSEUR"], "gf_canonical": "BET ASC", "family": "bet"},
+  "A-BET Ascenseur":        {"gf_names": ["BET ASC", "BET ASCENSEUR"], "gf_canonical": "BET ASC", "family": "bet"},
+  "B-BET Ascenseur":        {"gf_names": ["BET ASC", "BET ASCENSEUR"], "gf_canonical": "BET ASC", "family": "bet"},
+  "H51-ASC":                {"gf_names": ["BET ASC", "BET ASCENSEUR"], "gf_canonical": "BET ASC", "family": "bet"},
+
+  "0-BET Façade":           {"gf_names": ["BET FACADE"], "gf_canonical": "BET FACADE", "family": "bet"},
+  "A-BET Façade":           {"gf_names": ["BET FACADE"], "gf_canonical": "BET FACADE", "family": "bet"},
+  "B-BET Façade":           {"gf_names": ["BET FACADE"], "gf_canonical": "BET FACADE", "family": "bet"},
+  "H-BET Façade":           {"gf_names": ["BET FACADE"], "gf_canonical": "BET FACADE", "family": "bet"},
+
+  "0-BET VRD":              {"gf_names": ["PAYSAGISTE MUGO", "BET VRD"], "gf_canonical": "PAYSAGISTE MUGO", "family": "bet"},
+  "0-BET EV":               {"gf_names": ["BET EV"], "gf_canonical": "BET EV", "family": "bet"},
+
+  "0-CSPS":                 {"gf_names": ["CSPS"], "gf_canonical": "CSPS", "family": "csps"},
+
+  "0-BIM Manager":          {"gf_names": ["BIM MANAGER"], "gf_canonical": "BIM MANAGER", "family": "bim"},
+
+  "B13 - METALLERIE SERRURERIE": {"gf_names": ["B13 - METALLERIE SERRURERIE", "SERRURERIE"], "gf_canonical": "B13 - METALLERIE SERRURERIE", "family": "enterprise"},
+
+  "0-SAS":                  {"gf_names": ["SAS", "MOEX GEMO"], "gf_canonical": "MOEX GEMO", "family": "special"},
+
+  "_note": "Add new entries here when new approbateur names are discovered in GrandFichier Row 8. Use exact string matching (case-insensitive in code). Validate against actual GrandFichier before production use."
+}

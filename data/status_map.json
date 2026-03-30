@@ -1,0 +1,17 @@
+{
+  "_meta": "Status normalization map — GED raw 'Réponse' string → normalized code. Adapted from OLD JANSA VISASIST V1.",
+  "En attente":                    {"code": "EN_ATTENTE", "label": "En attente",                    "severity": "non_response"},
+  "Validé sans observation":       {"code": "VSO",        "label": "Validé sans observation",       "severity": "favorable"},
+  "Validé sans observation - SAS": {"code": "VAO_SAS",    "label": "Validé sans observation (SAS)", "severity": "favorable"},
+  "Favorable":                     {"code": "FAV",        "label": "Favorable",                     "severity": "favorable"},
+  "Validé avec observation":       {"code": "VAO",        "label": "Validé avec observation",       "severity": "caution"},
+  "Suspendu":                      {"code": "SUS",        "label": "Suspendu",                      "severity": "caution"},
+  "Refusé":                        {"code": "REF",        "label": "Refusé",                        "severity": "blocking"},
+  "Défavorable":                   {"code": "DEF",        "label": "Défavorable",                   "severity": "blocking"},
+  "Hors Mission":                  {"code": "HM",         "label": "Hors Mission",                  "severity": "neutral"},
+  "Hors Mission - En retard":      {"code": "HM",         "label": "Hors Mission",                  "severity": "neutral"},
+  "Annulé":                        {"code": "ANN",        "label": "Annulé",                        "severity": "neutral"},
+  "Sollicitation supplémentaire":  {"code": "SS",         "label": "Sollicitation supplémentaire",  "severity": "neutral"},
+  "Blockage GEMO Non Justifié":    {"code": "GEMO_NJ",    "label": "Blockage GEMO Non Justifié",    "severity": "neutral"},
+  "_NONE_":                        {"code": "NONE",       "label": "(absent)",                      "severity": "non_response"}
+}

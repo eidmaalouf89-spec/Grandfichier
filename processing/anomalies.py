@@ -1,0 +1,120 @@
+"""
+JANSA GrandFichier Updater — Anomaly logging utilities (V1)
+"""
+import json
+import logging
+from pathlib import Path
+from processing.models import AnomalyRecord
+
+logger = logging.getLogger(__name__)
+
+
+class AnomalyLogger:
+    """Collects AnomalyRecords during pipeline execution and exports them."""
+
+    def __init__(self):
+        self._records: list[AnomalyRecord] = []
+
+    def add(self, record: AnomalyRecord) -> None:
+        self._records.append(record)
+        lvl = logging.WARNING if record.severity == "WARNING" else (
+              logging.ERROR   if record.severity == "ERROR"   else logging.INFO)
+        logger.log(lvl, "[%s/%s] %s — %s",
+                   record.anomaly_type, record.severity,
+                   record.document_key, record.description)
+
+    def log_unmatched_ged(
+        self, source_file: str, source_row: str,
+        document_key: str, raw_data: dict
+    ) -> None:
+        self.add(AnomalyRecord(
+            anomaly_type="UNMATCHED_GED",
+            severity="WARNING",
+            source_type="GED",
+            source_file=source_file,
+            source_row_or_page=source_row,
+            document_key=document_key,
+            description="No matching row found in GrandFichier after all 4 cascade levels",
+            raw_data=raw_data,
+        ))
+
+    def log_unmatched_mission(
+        self, source_file: str, source_row: str,
+        document_key: str, mission_name: str
+    ) -> None:
+        self.add(AnomalyRecord(
+            anomaly_type="UNMATCHED_MISSION",
+            severity="WARNING",
+            source_type="GED",
+            source_file=source_file,
+            source_row_or_page=source_row,
+            document_key=document_key,
+            description=f"GED mission '{mission_name}' not mapped to any GrandFichier approbateur",
+            raw_data={"mission": mission_name},
+        ))
+
+    def log_status_conflict(
+        self, source_type: str, source_file: str, source_row: str,
+        document_key: str, field: str, value_a: str, source_a: str,
+        value_b: str, source_b: str
+    ) -> None:
+        self.add(AnomalyRecord(
+            anomaly_type="STATUS_CONFLICT",
+            severity="WARNING",
+            source_type=source_type,
+            source_file=source_file,
+            source_row_or_page=source_row,
+            document_key=document_key,
+            description=(
+                f"Conflicting '{field}' values: '{value_a}' (from {source_a}) vs "
+                f"'{value_b}' (from {source_b}). Using {source_a} per priority config."
+            ),
+            raw_data={"field": field, "value_a": value_a, "source_a": source_a,
+                      "value_b": value_b, "source_b": source_b},
+        ))
+
+    def log_parse_failure(
+        self, source_type: str, source_file: str, source_row: str,
+        document_key: str, description: str, raw_data: dict = None
+    ) -> None:
+        self.add(AnomalyRecord(
+            anomaly_type="PARSE_FAILURE",
+            severity="WARNING",
+            source_type=source_type,
+            source_file=source_file,
+            source_row_or_page=source_row,
+            document_key=document_key,
+            description=description,
+            raw_data=raw_data or {},
+        ))
+
+    def log_missing_field(
+        self, source_type: str, source_file: str, source_row: str,
+        document_key: str, field: str
+    ) -> None:
+        self.add(AnomalyRecord(
+            anomaly_type="MISSING_FIELD",
+            severity="INFO",
+            source_type=source_type,
+            source_file=source_file,
+            source_row_or_page=source_row,
+            document_key=document_key,
+            description=f"Field '{field}' is absent or empty",
+            raw_data={"field": field},
+        ))
+
+    @property
+    def records(self) -> list[AnomalyRecord]:
+        return list(self._records)
+
+    def counts_by_type(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for r in self._records:
+            counts[r.anomaly_type] = counts.get(r.anomaly_type, 0) + 1
+        return counts
+
+    def export_json(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump([r.to_dict() for r in self._records], f, ensure_ascii=False, indent=2)
+        logger.info("Anomaly log written: %s (%d records)", path, len(self._records))
