@@ -279,7 +279,7 @@ def apply_updates(
             # ── PDF-only pass: only OBSERVATIONS ──
             if pdf_only:
                 _append_observations_from_responses(
-                    ws, gf_row, responses, row_num, sheet_name, evidence
+                    ws, gf_row, responses, row_num, sheet_name, evidence, mission_map
                 )
                 continue
 
@@ -392,7 +392,7 @@ def apply_updates(
         # ── Append OBSERVATIONS (GED pass only — PDF appends handled separately) ──
         if not pdf_only:
             _append_observations_from_responses(
-                ws, gf_row, drec.responses, row_num, sheet_name, evidence
+                ws, gf_row, drec.responses, row_num, sheet_name, evidence, mission_map
             )
 
     # ── Write MAJ header + "Edited" label for every updated row ──
@@ -470,6 +470,177 @@ def _get_col_map(ws, gf_row: GFRow) -> Optional[dict]:
         return None
 
 
+# Patterns that indicate "no real comment — will come from PDF"
+_EMPTY_COMMENT_PATTERNS = [
+    "voir documents joints",
+    "voir document joint",
+    "voir doc joint",
+    "voir pièce jointe",
+    "voir pièces jointes",
+    "voir pj",
+    "voir visa",
+    "voir note",
+    "voir annotation",
+    "ras",
+    "r.a.s",
+    "r.a.s.",
+    "néant",
+    "sans observation",
+    "pas d'observation",
+    "pas de remarque",
+    "aucune observation",
+    "voir fichier joint",
+    "-",
+    ".",
+    "ok",
+]
+
+
+def _is_empty_comment(comment: str) -> bool:
+    """Return True if the comment has no real content (placeholder or empty)."""
+    if not comment:
+        return True
+    clean = comment.strip().lower()
+    if len(clean) < 3:
+        return True
+    return any(clean == p or clean.startswith(p) for p in _EMPTY_COMMENT_PATTERNS)
+
+
+def _extract_existing_groups(observations_text: str) -> set:
+    """
+    Parse existing OBSERVATIONS text to find which consultant groups
+    already have responses recorded.
+
+    Detects patterns like:
+    - "GEMO : VAO"
+    - "BET STR:VSO"
+    - "ARCHI : REF"
+    - "ARCHI MOX : VAO"
+    - "ACOUSTICIEN : HM"
+
+    Returns a set of normalized group name prefixes found.
+    """
+    if not observations_text:
+        return set()
+
+    import re
+    found = set()
+
+    pattern = re.compile(
+        r'([A-ZÀ-Ÿ][A-ZÀ-Ÿ\s\-\.]{2,30}?)\s*:\s*'
+        r'(VAO|VSO|REF|DEF|HM|FAV|SUS|SUSPENDU|EN.ATTENTE|FAVORABLE|DEFAVORABLE)',
+        re.IGNORECASE
+    )
+
+    for match in pattern.finditer(observations_text.upper()):
+        group_name = match.group(1).strip()
+        normalized = _normalize_obs_group(group_name)
+        if normalized:
+            found.add(normalized)
+
+    return found
+
+
+def _normalize_obs_group(raw_name: str) -> str:
+    """
+    Normalize a group name found in OBSERVATIONS to match
+    the unified group names from mission_map.json.
+    """
+    name = raw_name.strip().upper()
+
+    mappings = {
+        'GEMO': 'MOEX',
+        'MOX': 'MOEX',
+        'MOEX': 'MOEX',
+        'MOEX GEMO': 'MOEX',
+        'ARCHI': 'ARCHITECTE',
+        'ARCHI MOX': 'ARCHITECTE',
+        'ARCHITECTE': 'ARCHITECTE',
+        'BET STR': 'BET Structure',
+        'BET STR-TERRELL': 'BET Structure',
+        'STR-TERRELL': 'BET Structure',
+        'TERRELL': 'BET Structure',
+        'GEOLIA': 'BET Géotech',
+        'BET GEOLIA': 'BET Géotech',
+        'BET GEOLIA - G4': 'BET Géotech',
+        'G4': 'BET Géotech',
+        'ACOUSTICIEN': 'BET ACOUSTIQUE',
+        'ACOUSTICIEN AVLS': 'BET ACOUSTIQUE',
+        'AVLS': 'BET ACOUSTIQUE',
+        'AMO HQE': 'AMO HQE',
+        'AMO HQE LE SOMMER': 'AMO HQE',
+        'LE SOMMER': 'AMO HQE',
+        'SOCOTEC': 'Bureau de control',
+        'BC SOCOTEC': 'Bureau de control',
+        'BC': 'Bureau de control',
+        'BET EGIS': 'BET ELEC',
+        'EGIS': 'BET ELEC',
+        'BET POLLUTION': 'BET POL',
+        'BET POLLUTION DIE': 'BET POL',
+        'POLLUTION DIE': 'BET POL',
+        'DIE': 'BET POL',
+        'BET CVC': 'BET CVC',
+        'BET CVC - EGIS': 'BET CVC',
+        'BET PLOMB': 'BET Plomberie',
+        'BET PLOMB - EGIS': 'BET Plomberie',
+        'BET FACADE': 'BET Façade',
+        'BET FACADE - ELIOTH': 'BET Façade',
+        'BET ELIOTH': 'BET Façade',
+        'ELIOTH': 'BET Façade',
+        'BET SPK': 'BET SPK',
+        'BET ASCENSEUR': 'BET Ascenseur',
+        'BET ASCAUDIT': 'BET Ascenseur',
+        'ASCAUDIT': 'BET Ascenseur',
+        'MUGO': 'BET EV',
+        'PAYSAGISTE MUGO': 'BET EV',
+    }
+
+    if name in mappings:
+        return mappings[name]
+
+    for key, val in mappings.items():
+        if key in name or name in key:
+            return val
+
+    return name
+
+
+def _build_obs_entry(group_display_name: str, status: str, comment: str) -> str:
+    """
+    Build a single OBSERVATIONS entry in the standard format.
+
+    Format:
+        GROUP_NAME : STATUS
+        comment text (if not empty/placeholder)
+    """
+    header = f"{group_display_name} : {status}"
+
+    if _is_empty_comment(comment):
+        return header
+
+    return f"{header}\n{comment}"
+
+
+# Display name mapping: unified group → short display name for OBSERVATIONS
+_GROUP_DISPLAY_NAMES = {
+    'MOEX': 'GEMO',
+    'ARCHITECTE': 'ARCHI MOX',
+    'BET Structure': 'BET STR',
+    'Bureau de control': 'SOCOTEC',
+    'AMO HQE': 'AMO HQE',
+    'BET Géotech': 'GEOLIA',
+    'BET ACOUSTIQUE': 'ACOUSTICIEN',
+    'BET POL': 'BET POLLUTION',
+    'BET CVC': 'BET CVC',
+    'BET Plomberie': 'BET PLOMB',
+    'BET ELEC': 'BET EGIS',
+    'BET Façade': 'BET FACADE',
+    'BET Ascenseur': 'BET ASCENSEUR',
+    'BET SPK': 'BET SPK',
+    'BET EV': 'PAYSAGISTE MUGO',
+}
+
+
 def _append_observations_from_responses(
     ws,
     gf_row: GFRow,
@@ -477,42 +648,93 @@ def _append_observations_from_responses(
     row_num: int,
     sheet_name: str,
     evidence: list[SourceEvidence],
+    mission_map: dict,
 ) -> None:
     """
-    Append new comments from responses to the OBSERVATIONS column.
-    Never overwrites existing text — only appends new unique comments.
-    Respects should_update: skips if no new comment content.
+    Smart OBSERVATIONS update:
+    1. Read existing cell content
+    2. Detect which groups already have responses
+    3. Only add NEW responses not already present
+    4. Format: GROUP_NAME : STATUS + comment
+    5. Skip placeholder comments ("voir documents joints" etc.)
     """
     from processing.grandfichier_reader import _find_observations_col, _detect_variant, _read_approbateurs
+
     _, col_map = _detect_variant(ws)
     appros = gf_row.approbateurs
     obs_col = _find_observations_col(ws, appros, col_map, ws.max_column or 60)
-
     if not obs_col:
         return
 
-    existing_obs = gf_row.observations or ""
-    new_comments = [
-        f"[{cr.source_type} {cr.source_row_or_page}] {cr.comment}"
-        for cr in responses
-        if cr.comment and cr.comment not in existing_obs
-    ]
+    existing_obs = str(gf_row.observations or "")
 
-    if new_comments:
-        separator = "\n---\n" if existing_obs else ""
-        new_obs = existing_obs + separator + "\n".join(new_comments)
-        ws.cell(row=row_num, column=obs_col).value = new_obs
-        evidence.append(SourceEvidence(
-            sheet_name=sheet_name,
-            row_number=row_num,
-            column_name="OBSERVATIONS",
-            old_value=existing_obs[:80] + "..." if len(existing_obs) > 80 else existing_obs,
-            new_value=f"[appended {len(new_comments)} comment(s)]",
-            source_type="MIXED",
-            source_file="",
-            source_row_or_page="",
-            update_reason="New comments appended from GED/REPORT sources",
-        ))
+    # Parse which groups already have responses in existing text
+    existing_groups = _extract_existing_groups(existing_obs)
+
+    # Group responses by mission group
+    ged_to_group = mission_map.get("ged_to_group", {})
+    special_groups = mission_map.get("special_groups", {})
+    no_gf_col = set(mission_map.get("no_gf_column", []))
+
+    new_entries = []
+    for cr in responses:
+        if not cr.comment and not cr.normalized_status:
+            continue
+
+        group = ged_to_group.get(cr.mission, "")
+        if not group:
+            continue
+
+        # Skip MOEX SAS and groups without GF column
+        if special_groups.get(group) == "SKIP":
+            continue
+        if group in no_gf_col:
+            continue
+
+        # Skip if this group already has a response in existing OBSERVATIONS
+        if group in existing_groups:
+            continue
+
+        # Skip if no real status
+        if not cr.normalized_status or cr.normalized_status in ("EN_ATTENTE", "NONE", ""):
+            continue
+
+        # Build display name
+        display_name = _GROUP_DISPLAY_NAMES.get(group, group)
+
+        # Build the entry
+        entry = _build_obs_entry(display_name, cr.normalized_status, cr.comment)
+        new_entries.append((group, entry))
+
+    # Deduplicate: one entry per group (take the first/best)
+    seen_groups: set = set()
+    final_entries = []
+    for group, entry in new_entries:
+        if group not in seen_groups:
+            seen_groups.add(group)
+            final_entries.append(entry)
+
+    if not final_entries:
+        return
+
+    # Append to existing observations
+    separator = "\n" if existing_obs.strip() else ""
+    new_text = "\n".join(final_entries)
+    updated_obs = existing_obs + separator + new_text if existing_obs.strip() else new_text
+
+    ws.cell(row=row_num, column=obs_col).value = updated_obs
+
+    evidence.append(SourceEvidence(
+        sheet_name=sheet_name,
+        row_number=row_num,
+        column_name="OBSERVATIONS",
+        old_value=existing_obs[:80] + "..." if len(existing_obs) > 80 else existing_obs,
+        new_value=f"[added {len(final_entries)} new response(s): {', '.join(g for g, _ in new_entries[:3])}]",
+        source_type="GED",
+        source_file="",
+        source_row_or_page="",
+        update_reason="Smart OBS update: only new responses added, duplicates skipped",
+    ))
 
 
 # ---------------------------------------------------------------------------
