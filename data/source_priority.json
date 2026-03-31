@@ -4,11 +4,11 @@
   "response_date":  ["GED", "SAS", "REPORT"],
   "status":         ["GED", "SAS", "REPORT"],
   "comment":        ["REPORT", "GED", "SAS"],
-  "visa_global":    ["COMPUTED"],
+  "visa_global":    ["MOEX_COPY"],
   "numero_bdx":     ["GED", "SAS"],
   "date_reception": ["GED", "SAS"],
   "_notes": {
-    "visa_global": "COMPUTED means it is always recomputed from worst-case TAG_PRIORITY — never taken directly from any source.",
+    "visa_global": "MOEX_COPY means VISA GLOBAL is always a copy of the MOEX GEMO STATUT cell for that row after approbateur columns are written.",
     "comment": "REPORT is first for comments because PDF reports tend to have richer reviewer annotations than GED free-text fields.",
     "conflict_behaviour": "When two sources at the same priority level provide different values, log a STATUS_CONFLICT anomaly and use the first source in this list."
   }

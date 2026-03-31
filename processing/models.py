@@ -150,6 +150,7 @@ class GFRow:
     ancien: bool              # True if ANCIEN flag = 1
     visa_global: str          # current VISA GLOBAL value
     observations: str         # current OBSERVATIONS text
+    date_recept: str = ""     # DATE DE RECEPTION from GF (dd/mm/yyyy or raw)
     approbateurs: list[GFApprobateur] = field(default_factory=list)
 
 

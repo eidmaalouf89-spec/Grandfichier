@@ -76,8 +76,7 @@
   },
 
   "special_groups": {
-    "MOEX":        "VISA_GLOBAL",
-    "MOEX SAS":    "SKIP"
+    "MOEX SAS": "SKIP"
   },
 
   "no_gf_column": [

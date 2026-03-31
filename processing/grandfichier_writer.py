@@ -6,10 +6,11 @@ Produces SourceEvidence records for every field written.
 Preserves existing formatting.
 
 Update rules (V2):
-- VISA GLOBAL: written from MOEX mission response verbatim (NOT worst-tag computed)
+- VISA GLOBAL: copied from MOEX GEMO STATUT column after approbateur write
+- DATE CONTRACTUELLE VISA SYNTHESE: Date réception + 15 calendar days (written once, never overwritten)
 - STATUT/DATE per approbateur: resolved via mission_map group → GF row 8 approbateur name
 - Never overwrite existing data with empty / pending (PATCH 5)
-- OBSERVATIONS: append new comments from PDF source only — DO NOT overwrite
+- OBSERVATIONS: smart update — only new consultant groups added, duplicates skipped
 - Groups with no GF column (MOEX SAS, BET VRD, etc.): logged as NO_GF_COLUMN, not written
 """
 import csv
@@ -18,6 +19,7 @@ import os
 import shutil
 import tempfile
 from collections import defaultdict
+from datetime import timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -158,6 +160,22 @@ def _find_date_contrat_col(ws, visa_global_col: int) -> int:
     return _date_contrat_col_cache[key]
 
 
+def _compute_date_contractuelle(date_recept_str: str) -> str:
+    """
+    Compute DATE CONTRACTUELLE VISA SYNTHESE = Date réception + 15 calendar days.
+    Input: date string in dd/mm/yyyy or ISO format.
+    Output: dd/mm/yyyy string, or "" if unparseable.
+    """
+    if not date_recept_str:
+        return ""
+    from processing.dates import parse_date
+    d = parse_date(date_recept_str)
+    if d is None:
+        return ""
+    result = d + timedelta(days=15)
+    return result.strftime("%d/%m/%Y")
+
+
 # ---------------------------------------------------------------------------
 # Main writer
 # ---------------------------------------------------------------------------
@@ -247,15 +265,8 @@ def apply_updates(
         priority_status = source_priority.get("status", ["GED", "SAS", "REPORT"])
         priority_date   = source_priority.get("response_date", ["GED", "SAS", "REPORT"])
 
-        moex_responses: list[CanonicalResponse] = []
-
         for mission, responses in by_mission.items():
             group = _get_mission_group(mission, mission_map)
-
-            # ── MOEX: route to VISA GLOBAL ──
-            if special_groups.get(group) == "VISA_GLOBAL":
-                moex_responses.extend(responses)
-                continue
 
             # ── Skip (MOEX SAS): do nothing ──
             if special_groups.get(group) == "SKIP":
@@ -340,40 +351,45 @@ def apply_updates(
                     fields_updated += 1
                     edited_rows_per_sheet[sheet_name].add(row_num)
 
-        # ── Write VISA GLOBAL + DATE CONTRACTUELLE VISA SYNTHESE from MOEX response ──
-        if moex_responses and not pdf_only:
-            # Dynamically locate both columns from row 7 header text (robust across all variants)
-            visa_col       = _find_visa_global_col(ws, col_map)
-            date_cont_col  = _find_date_contrat_col(ws, visa_col)
+        # ── VISA GLOBAL = copy of MOEX GEMO STATUT ──
+        # ── DATE CONTRACTUELLE VISA SYNTHESE = Date réception + 15 jours ──
+        if not pdf_only:
+            visa_col = _find_visa_global_col(ws, col_map)
+            date_cont_col = _find_date_contrat_col(ws, visa_col)
 
-            best_moex_s = _pick_best_by_priority(moex_responses, "normalized_status", priority_status)
-            best_moex_d = _pick_best_by_priority(moex_responses, "response_date",     priority_date)
+            # Find the MOEX GEMO approbateur object for this row
+            moex_appro = None
+            for a in gf_row.approbateurs:
+                if "MOEX" in a.name.upper() or "GEMO" in a.name.upper():
+                    moex_appro = a
+                    break
 
-            # VISA GLOBAL — MOEX status verbatim
-            if best_moex_s and best_moex_s.normalized_status:
-                new_vg  = best_moex_s.normalized_status
-                old_vg  = str(ws.cell(row=row_num, column=visa_col).value or "")
-                if should_update(old_vg, new_vg, new_vg, is_visa_global=True) and new_vg != old_vg:
-                    ws.cell(row=row_num, column=visa_col).value = new_vg
+            # Step 1: Copy MOEX GEMO STATUT → VISA GLOBAL
+            if moex_appro is not None:
+                moex_statut = str(ws.cell(row=row_num, column=moex_appro.col_statut + 1).value or "")
+                old_vg = str(ws.cell(row=row_num, column=visa_col).value or "")
+                if moex_statut and should_update(old_vg, moex_statut, moex_statut, is_visa_global=True) and moex_statut != old_vg:
+                    ws.cell(row=row_num, column=visa_col).value = moex_statut
                     evidence.append(SourceEvidence(
                         sheet_name=sheet_name,
                         row_number=row_num,
                         column_name="VISA GLOBAL",
                         old_value=old_vg,
-                        new_value=new_vg,
-                        source_type=best_moex_s.source_type,
-                        source_file=best_moex_s.source_file,
-                        source_row_or_page=best_moex_s.source_row_or_page,
-                        update_reason="MOEX response — VISA GLOBAL verbatim (not computed)",
+                        new_value=moex_statut,
+                        source_type="GF_COPY",
+                        source_file="",
+                        source_row_or_page="",
+                        update_reason="Copied from MOEX GEMO STATUT column",
                     ))
                     fields_updated += 1
                     edited_rows_per_sheet[sheet_name].add(row_num)
 
-            # DATE CONTRACTUELLE VISA SYNTHESE — MOEX response date
-            if best_moex_d and best_moex_d.response_date:
-                new_dc  = _fmt_date(best_moex_d.response_date)
-                old_dc  = str(ws.cell(row=row_num, column=date_cont_col).value or "")
-                if should_update(old_dc, new_dc) and _is_newer(best_moex_d.response_date, old_dc):
+            # Step 2: DATE CONTRACTUELLE = Date réception + 15 jours
+            old_dc = str(ws.cell(row=row_num, column=date_cont_col).value or "")
+            if not old_dc.strip():
+                date_recept = str(gf_row.date_recept or "")
+                new_dc = _compute_date_contractuelle(date_recept)
+                if new_dc:
                     ws.cell(row=row_num, column=date_cont_col).value = new_dc
                     evidence.append(SourceEvidence(
                         sheet_name=sheet_name,
@@ -381,10 +397,10 @@ def apply_updates(
                         column_name="DATE CONTRACTUELLE VISA SYNTHESE",
                         old_value=old_dc,
                         new_value=new_dc,
-                        source_type=best_moex_d.source_type,
-                        source_file=best_moex_d.source_file,
-                        source_row_or_page=best_moex_d.source_row_or_page,
-                        update_reason="MOEX response date",
+                        source_type="COMPUTED",
+                        source_file="",
+                        source_row_or_page="",
+                        update_reason="Date réception + 15 calendar days",
                     ))
                     fields_updated += 1
                     edited_rows_per_sheet[sheet_name].add(row_num)
