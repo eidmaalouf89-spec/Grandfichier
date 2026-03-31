@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Optional
 
 import openpyxl
+from openpyxl.styles import Font
 
 from processing.models import DeliverableRecord, CanonicalResponse, SourceEvidence, GFRow, GFApprobateur
 from processing.config import GF_DATA_START_ROW, GF_HEADER_ROW
@@ -201,6 +202,12 @@ def apply_updates(
     evidence: list[SourceEvidence] = []
     fields_updated = 0
 
+    # SAFETY: Record original max row per sheet — writer must NEVER exceed these
+    original_max_rows: dict[str, int] = {sn: (wb[sn].max_row or 0) for sn in wb.sheetnames}
+
+    # Track which (sheet, row) pairs were updated, for MAJ column
+    edited_rows_per_sheet: dict[str, set[int]] = defaultdict(set)
+
     # Pre-build mission_map lookups
     no_gf_col_groups: set[str] = set(mission_map.get("no_gf_column", []))
     special_groups: dict[str, str] = mission_map.get("special_groups", {})
@@ -212,6 +219,12 @@ def apply_updates(
         if sheet_name not in wb.sheetnames:
             logger.warning("Sheet '%s' not found — skipping row %d", sheet_name, row_num)
             continue
+
+        # SAFETY: Refuse to write beyond the original GF data range
+        assert row_num <= original_max_rows.get(sheet_name, 0), (
+            f"BLOCKED: Attempted to write to row {row_num} in '{sheet_name}' "
+            f"(original max={original_max_rows.get(sheet_name, 0)})"
+        )
 
         ws = wb[sheet_name]
         gf_key = (sheet_name, row_num)
@@ -305,6 +318,7 @@ def apply_updates(
                         ev.update_reason += " [ANCIEN row]"
                     evidence.append(ev)
                     fields_updated += 1
+                    edited_rows_per_sheet[sheet_name].add(row_num)
 
             # ── Write DATE ──
             if best_date and best_date.response_date:
@@ -324,6 +338,7 @@ def apply_updates(
                         update_reason="GED response date is newer",
                     ))
                     fields_updated += 1
+                    edited_rows_per_sheet[sheet_name].add(row_num)
 
         # ── Write VISA GLOBAL + DATE CONTRACTUELLE VISA SYNTHESE from MOEX response ──
         if moex_responses and not pdf_only:
@@ -352,6 +367,7 @@ def apply_updates(
                         update_reason="MOEX response — VISA GLOBAL verbatim (not computed)",
                     ))
                     fields_updated += 1
+                    edited_rows_per_sheet[sheet_name].add(row_num)
 
             # DATE CONTRACTUELLE VISA SYNTHESE — MOEX response date
             if best_moex_d and best_moex_d.response_date:
@@ -371,12 +387,42 @@ def apply_updates(
                         update_reason="MOEX response date",
                     ))
                     fields_updated += 1
+                    edited_rows_per_sheet[sheet_name].add(row_num)
 
         # ── Append OBSERVATIONS (GED pass only — PDF appends handled separately) ──
         if not pdf_only:
             _append_observations_from_responses(
                 ws, gf_row, drec.responses, row_num, sheet_name, evidence
             )
+
+    # ── Write MAJ header + "Edited" label for every updated row ──
+    if edited_rows_per_sheet:
+        for sname, row_set in edited_rows_per_sheet.items():
+            if sname not in wb.sheetnames:
+                continue
+            ws = wb[sname]
+            # Find OBSERVATIONS column in row 8
+            obs_col = None
+            for c in range(1, (ws.max_column or 60) + 1):
+                val = str(ws.cell(row=8, column=c).value or "").strip().upper()
+                if val == "OBSERVATIONS":
+                    obs_col = c
+                    break
+            if not obs_col:
+                continue
+            edited_col = obs_col + 1
+            # Write MAJ header in row 7 if not already present
+            if not ws.cell(row=7, column=edited_col).value:
+                ws.cell(row=7, column=edited_col).value = "MAJ"
+                ws.cell(row=7, column=edited_col).font = Font(bold=True)
+            # Write "Edited" for each updated row
+            for row_num in row_set:
+                ws.cell(row=row_num, column=edited_col).value = "Edited"
+        logger.info(
+            "Wrote 'Edited' label for %d rows across %d sheets",
+            sum(len(v) for v in edited_rows_per_sheet.values()),
+            len(edited_rows_per_sheet),
+        )
 
     # Save via /tmp to avoid corrupting FUSE state (writing a large xlsx directly
     # to the FUSE-mounted filesystem breaks subsequent open() calls in this process).
@@ -473,26 +519,59 @@ def _append_observations_from_responses(
 # Orphan GED export
 # ---------------------------------------------------------------------------
 
-def export_orphan_ged(orphan_records: list[CanonicalResponse], output_path: Path) -> None:
+def export_orphan_ged(
+    orphan_records: list[CanonicalResponse],
+    all_ged_records: list[CanonicalResponse],
+    output_path: Path,
+) -> None:
     """
-    Write GED documents that exist in GED but have no matching GF row to an xlsx.
+    Export orphan GED documents where MOEX is still En attente.
+
+    Only includes docs where:
+      1. The document is NOT in the GF (orphan — caller guarantees this)
+      2. The document has at least one MOEX mission response
+      3. ALL MOEX responses are "En attente" (open — MOEX has not yet responded)
+
     Deduplicates by (NUMERO, INDICE), sorts by EMETTEUR then NUMERO.
+    TITRE column shows the actual Libellé du fichier from the GED.
     Saves via /tmp to avoid FUSE write issues.
     """
+    from collections import defaultdict
+    from processing.actors import MOEX_MISSIONS
+
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Deduplicate by (NUMERO, INDICE)
+    # Build (NUMERO, INDICE) → all responses, to check MOEX status
+    doc_responses: dict[tuple, list[CanonicalResponse]] = defaultdict(list)
+    for cr in all_ged_records:
+        doc_responses[(cr.numero, cr.indice)].append(cr)
+
+    # Filter orphan records to only those where MOEX is En attente
+    filtered: list[CanonicalResponse] = []
     seen: set[tuple] = set()
-    unique: list[CanonicalResponse] = []
     for cr in orphan_records:
         key = (cr.numero or "", cr.indice or "")
-        if key not in seen:
-            seen.add(key)
-            unique.append(cr)
+        if key in seen:
+            continue
+
+        responses = doc_responses.get((cr.numero, cr.indice), [])
+
+        # Must have at least one MOEX mission
+        moex_responses = [r for r in responses if r.mission in MOEX_MISSIONS]
+        if not moex_responses:
+            continue
+
+        # All MOEX responses must be En attente
+        moex_statuses = [r.raw_status.strip().lower() for r in moex_responses if r.raw_status]
+        if not moex_statuses or not all(s == "en attente" for s in moex_statuses):
+            continue  # MOEX already responded → disregard
+
+        seen.add(key)
+        filtered.append(cr)
 
     # Sort: EMETTEUR then NUMERO
-    unique.sort(key=lambda r: (r.emetteur or "", r.numero or ""))
+    filtered.sort(key=lambda r: (r.emetteur or "", r.numero or ""))
 
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -502,13 +581,13 @@ def export_orphan_ged(orphan_records: list[CanonicalResponse], output_path: Path
     for col, h in enumerate(headers, start=1):
         ws.cell(row=1, column=col).value = h
 
-    for row_idx, cr in enumerate(unique, start=2):
+    for row_idx, cr in enumerate(filtered, start=2):
         ws.cell(row=row_idx, column=1).value = cr.emetteur or ""
         ws.cell(row=row_idx, column=2).value = cr.lot or ""
         ws.cell(row=row_idx, column=3).value = cr.type_doc or ""
         ws.cell(row=row_idx, column=4).value = cr.numero or ""
         ws.cell(row=row_idx, column=5).value = cr.indice or ""
-        ws.cell(row=row_idx, column=6).value = cr.document_key or ""
+        ws.cell(row=row_idx, column=6).value = cr.libelle or cr.document_key or ""
         ws.cell(row=row_idx, column=7).value = cr.response_date or ""
         ws.cell(row=row_idx, column=8).value = cr.mission or ""
 
@@ -517,7 +596,80 @@ def export_orphan_ged(orphan_records: list[CanonicalResponse], output_path: Path
     wb.save(_tmp_xlsx)
     shutil.copy2(_tmp_xlsx, str(output_path))
     os.remove(_tmp_xlsx)
-    logger.info("Orphan GED export written: %s (%d unique docs)", output_path, len(unique))
+    logger.info(
+        "Orphan GED export written: %s (%d docs — MOEX En attente only, from %d total orphans)",
+        output_path, len(filtered), len(set((cr.numero, cr.indice) for cr in orphan_records)),
+    )
+
+
+def export_orphan_summary(
+    orphan_records: list[CanonicalResponse],
+    all_ged_records: list[CanonicalResponse],
+    output_path: Path,
+) -> None:
+    """
+    Export a concise summary of orphan GED docs (MOEX En attente only):
+    NUMERO | EMETTEUR | DATE DE RECEPTION (date_depot)
+    One row per unique (NUMERO, INDICE). Saves via /tmp.
+    """
+    from collections import defaultdict
+    from processing.actors import MOEX_MISSIONS
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Build (NUMERO, INDICE) → all responses, to check MOEX status + get date_depot
+    doc_responses: dict[tuple, list[CanonicalResponse]] = defaultdict(list)
+    for cr in all_ged_records:
+        doc_responses[(cr.numero, cr.indice)].append(cr)
+
+    filtered: list[CanonicalResponse] = []
+    seen: set[tuple] = set()
+    for cr in orphan_records:
+        key = (cr.numero or "", cr.indice or "")
+        if key in seen:
+            continue
+        responses = doc_responses.get((cr.numero, cr.indice), [])
+        moex_responses = [r for r in responses if r.mission in MOEX_MISSIONS]
+        if not moex_responses:
+            continue
+        moex_statuses = [r.raw_status.strip().lower() for r in moex_responses if r.raw_status]
+        if not moex_statuses or not all(s == "en attente" for s in moex_statuses):
+            continue
+        seen.add(key)
+        filtered.append(cr)
+
+    filtered.sort(key=lambda r: (r.emetteur or "", r.numero or ""))
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Orphan Summary"
+
+    headers = ["NUMERO", "EMETTEUR", "DATE DE RECEPTION"]
+    for col, h in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=col)
+        cell.value = h
+        cell.font = Font(bold=True)
+
+    for row_idx, cr in enumerate(filtered, start=2):
+        ws.cell(row=row_idx, column=1).value = cr.numero or ""
+        ws.cell(row=row_idx, column=2).value = cr.emetteur or ""
+        ws.cell(row=row_idx, column=3).value = cr.date_depot or ""
+
+    # Auto-width columns
+    for col_idx, _ in enumerate(headers, start=1):
+        max_len = max(
+            (len(str(ws.cell(row=r, column=col_idx).value or "")) for r in range(1, len(filtered) + 2)),
+            default=10,
+        )
+        ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = min(max_len + 4, 50)
+
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as _tmp:
+        _tmp_xlsx = _tmp.name
+    wb.save(_tmp_xlsx)
+    shutil.copy2(_tmp_xlsx, str(output_path))
+    os.remove(_tmp_xlsx)
+    logger.info("Orphan summary written: %s (%d rows)", output_path, len(filtered))
 
 
 # ---------------------------------------------------------------------------

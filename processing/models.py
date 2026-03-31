@@ -41,6 +41,8 @@ class CanonicalResponse:
     days_delta: Optional[int]     # days late (positive) or early (negative)
     comment: str                  # free-text observation
     attachments: str              # attachment filenames (semicolon-separated)
+    libelle: str = ""             # document title/label (from GED col 14 — Libellé du fichier)
+    date_depot: str = ""          # date document was deposited in GED (col 19 — date de réception)
 
     # --- Matching metadata (filled in by matcher.py) ---
     confidence: str = "UNMATCHED"  # "EXACT" | "FUZZY" | "PARTIAL" | "UNMATCHED"

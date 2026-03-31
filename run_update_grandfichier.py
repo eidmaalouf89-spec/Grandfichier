@@ -91,7 +91,8 @@ def main():
     from processing.matcher import GEDNumeroIndex, MatchSummary, lookup_ged_for_gf
     from processing.merge_engine import build_deliverables, load_source_priority
     from processing.grandfichier_writer import (
-        apply_updates, export_evidence_csv, export_match_summary_csv, export_orphan_ged
+        apply_updates, export_evidence_csv, export_match_summary_csv,
+        export_orphan_ged, export_orphan_summary,
     )
 
     # ---- Load config maps ----
@@ -189,6 +190,7 @@ def main():
     output_anomaly_path  = run_dir / "anomaly_log.json"
     output_match_path    = run_dir / "match_summary.csv"
     orphan_path          = run_dir / "orphan_ged_documents.xlsx"
+    orphan_summary_path  = run_dir / "orphan_summary.xlsx"
 
     # ---- Step 5/7: Index GED records by NUMERO ----
     logger.info("Step 5/7: Indexing GED records by NUMERO...")
@@ -223,7 +225,8 @@ def main():
 
     # ---- Step 7b/7: Export orphan GED docs (in GED but NOT in GF) ----
     logger.info("Step 7b/7: Exporting orphan GED documents...")
-    export_orphan_ged(orphan_ged_docs, orphan_path)
+    export_orphan_ged(orphan_ged_docs, ged_records, orphan_path)
+    export_orphan_summary(orphan_ged_docs, ged_records, orphan_summary_path)
 
     # ---- PDF pass (if provided) — append OBSERVATIONS only ----
     if pdf_records:
@@ -274,6 +277,7 @@ def main():
     print(f"  GrandFichier rows (master):   {len(gf_rows):>6}")
     print(f"  GF rows matched to GED:       {match_summary.total_matched:>6}")
     print(f"  GF rows with no GED data:     {match_summary.total_unmatched:>6}")
+    print(f"  GF rows skipped (OLD sheet):  {match_summary._counts.get('GF_OLD_SHEET_SKIP', 0):>6}")
     print(f"  Orphan GED documents:         {len(orphan_ged_docs):>6}")
     print(f"  Fields updated:               {fields_updated:>6}")
     print(f"  Total anomalies:              {total_anomalies:>6}")
@@ -287,6 +291,7 @@ def main():
     print(f"  Anomaly log:          {output_anomaly_path}")
     print(f"  Match summary:        {output_match_path}")
     print(f"  Orphan GED docs:      {orphan_path}")
+    print(f"  Orphan summary:       {orphan_summary_path}")
     print("=" * 60)
 
     return 0

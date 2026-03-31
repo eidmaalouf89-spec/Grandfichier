@@ -102,6 +102,9 @@ def ingest_ged(
         numero_raw = _cell(row_cells, GED_COL["numero"])
         indice     = _str(_cell(row_cells, GED_COL["indice"]))
         libelle    = _str(_cell(row_cells, GED_COL["libelle"]))
+        # date_depot (col 19) is empty in current GED exports;
+        # derniere_modif (col 22) holds the actual deposit date/time
+        date_depot = _str(_cell(row_cells, GED_COL["derniere_modif"]))
 
         mission      = _str(_cell(row_cells, GED_COL["mission"]))
         respondant   = _str(_cell(row_cells, GED_COL["respondant"]))
@@ -163,6 +166,8 @@ def ingest_ged(
             days_delta=days_delta_val,
             comment=commentaire,
             attachments=pieces,
+            libelle=libelle,
+            date_depot=date_depot,
             parse_warnings=parse_warnings,
         )
         records.append(rec)

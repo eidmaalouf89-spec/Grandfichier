@@ -65,10 +65,13 @@ class GEDNumeroIndex:
         return set(self._index.keys())
 
 
+OLD_SHEET_PREFIX = "OLD "
+
+
 class MatchSummary:
     """Tracks match statistics for GF-master lookup."""
 
-    LEVELS = ["GF_MATCHED", "GF_INDICE_MISMATCH", "GF_NO_GED"]
+    LEVELS = ["GF_MATCHED", "GF_INDICE_MISMATCH", "GF_NO_GED", "GF_OLD_SHEET_SKIP"]
 
     def __init__(self):
         self._counts: dict[str, int] = {lvl: 0 for lvl in self.LEVELS}
@@ -130,6 +133,18 @@ def lookup_ged_for_gf(
 
     for gf_row in gf_rows:
         gf_num = normalize_numero(gf_row.numero)
+
+        # OLD sheets: index their GED records (so they don't appear as orphans)
+        # but NEVER write to them — skip from matched_gf entirely
+        if gf_row.sheet_name.startswith(OLD_SHEET_PREFIX):
+            if gf_num:
+                ged_candidates = ged_index.find(gf_num)
+                for cr in ged_candidates:
+                    if _score_ged_to_gf(cr, gf_row) >= 10:
+                        claimed_ged_ids.add(id(cr))
+            match_summary.record("GF_OLD_SHEET_SKIP")
+            continue  # DO NOT add to matched_gf
+
         if not gf_num:
             unmatched_gf.append(gf_row)
             continue
