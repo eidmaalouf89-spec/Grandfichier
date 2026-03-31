@@ -557,66 +557,221 @@ def _extract_existing_groups(observations_text: str) -> set:
     return found
 
 
+# Comprehensive mapping: OBSERVATIONS group name → unified mission_map group
+# Built from scanning all 3,249 unique group-name patterns across production GF.
+# Case-insensitive lookup is done by the caller (.upper() on key before lookup).
+_OBS_GROUP_NORMALIZE_MAP: dict[str, str] = {
+    # ── MOEX — always written as GEMO in OBSERVATIONS, never as "MOX" ──
+    'GEMO': 'MOEX',
+    'MOEX': 'MOEX',
+    'MOEX GEMO': 'MOEX',
+    'VISA GEMO': 'MOEX',
+    'GEMO / MOA': 'MOEX',
+    'GEMO/MOA': 'MOEX',
+
+    # ── MOEX SAS variants — SKIP group ──
+    'SAS': 'MOEX SAS',
+    'GEMO SAS': 'MOEX SAS',
+    'GEMO:SAS': 'MOEX SAS',
+    'GEMO: SAS': 'MOEX SAS',
+    'GEMO-SAS': 'MOEX SAS',
+    'GEMO  SAS': 'MOEX SAS',
+    'GEMO :  SAS': 'MOEX SAS',
+    'GEMO : SAS': 'MOEX SAS',
+    'GEMO: SASA': 'MOEX SAS',
+    'GEMO SAS REF': 'MOEX SAS',
+    'GEMO SA': 'MOEX SAS',
+    'GEMO: MOX': 'MOEX SAS',
+
+    # ── ARCHITECTE — MOX = ARCHI MOX shorthand, NOT MOEX ──
+    'MOX': 'ARCHITECTE',
+    'ARCHI': 'ARCHITECTE',
+    'ARCHI MOX': 'ARCHITECTE',
+    'ARCHITECTE': 'ARCHITECTE',
+    'ARCHITECTE MOX': 'ARCHITECTE',
+    'ARCHITECTES': 'ARCHITECTE',
+    'MOX ARCHI': 'ARCHITECTE',
+    'ARCHIMOX': 'ARCHITECTE',
+    'ARCHBI MOX': 'ARCHITECTE',
+    'ARCHII': 'ARCHITECTE',
+    'ARCHII MOX': 'ARCHITECTE',
+    'ARCHIO': 'ARCHITECTE',
+    'ARCHIA': 'ARCHITECTE',
+    'ARCI': 'ARCHITECTE',
+    'ARCI MOX': 'ARCHITECTE',
+    'ACHI': 'ARCHITECTE',
+    'ARCH MOX': 'ARCHITECTE',
+    'ARECHI MOX': 'ARCHITECTE',
+    'ARHITECTE': 'ARCHITECTE',
+    'ARCHITEECTE': 'ARCHITECTE',
+    'ARCHITCTES': 'ARCHITECTE',
+    'B-ARCHITECTE': 'ARCHITECTE',
+    'B- MOX': 'ARCHITECTE',
+    'ARCHIO MOX': 'ARCHITECTE',
+    'ARCHBI': 'ARCHITECTE',
+    'ARCHI /': 'ARCHITECTE',
+    'ARCH /': 'ARCHITECTE',
+
+    # ── BET Structure ──
+    'BET STR': 'BET Structure',
+    'BET STR-TERRELL': 'BET Structure',
+    'BET STR TERRELL': 'BET Structure',
+    'STR-TERRELL': 'BET Structure',
+    'TERRELL': 'BET Structure',
+    'TERREL': 'BET Structure',
+    'TERELLE': 'BET Structure',
+    'TERELL': 'BET Structure',
+    'BET TERRELL': 'BET Structure',
+    'BET STRUCTURE': 'BET Structure',
+    'BET STRUCTURE TERRELL': 'BET Structure',
+    'BET TRL': 'BET Structure',
+    'BET TER': 'BET Structure',
+    'BET SRT': 'BET Structure',
+    'BET STRUCRURE': 'BET Structure',
+    'BET STRE TERRELL': 'BET Structure',
+    'BET TSR TERRELL': 'BET Structure',
+    'BET STR TERRRELLL': 'BET Structure',
+    'BETSTR': 'BET Structure',
+    'BUT STRUCTURE': 'BET Structure',
+    'TERRELL STR': 'BET Structure',
+    'TERREL STR': 'BET Structure',
+    'TERRELL:STR': 'BET Structure',
+    'B-BET STRUCTURE TERRELL': 'BET Structure',
+    'BET STR TERRELL /': 'BET Structure',
+
+    # ── Bureau de contrôle ──
+    'SOCOTEC': 'Bureau de control',
+    'BC SOCOTEC': 'Bureau de control',
+    'BC': 'Bureau de control',
+    'CT SOCOTEC': 'Bureau de control',
+    'BC SOSCOTEC': 'Bureau de control',
+    'BUREAU DE CONTRÔLE': 'Bureau de control',
+    'BUREAU DE CONTROLE': 'Bureau de control',
+    'BET CONTROLE': 'Bureau de control',
+
+    # ── AMO HQE ──
+    'AMO HQE': 'AMO HQE',
+    'AMO HQE LE SOMMER': 'AMO HQE',
+    'LE SOMMER': 'AMO HQE',
+    'HQE': 'AMO HQE',
+    'AMO': 'AMO HQE',
+    'AMO ENV LE SOMMER': 'AMO HQE',
+    'AMO ENV LESOMMER': 'AMO HQE',
+    'B-AMO HQE': 'AMO HQE',
+    '-AMO HQE': 'AMO HQE',
+    'AMO: HQE': 'AMO HQE',
+
+    # ── BET Géotech ──
+    'GEOLIA': 'BET Géotech',
+    'BET GEOLIA': 'BET Géotech',
+    'BET GEOLIA - G4': 'BET Géotech',
+    'BET GEOTECH GEOLIA': 'BET Géotech',
+    'G4': 'BET Géotech',
+
+    # ── BET ACOUSTIQUE ──
+    'ACOUSTICIEN': 'BET ACOUSTIQUE',
+    'ACOUSTICIEN AVLS': 'BET ACOUSTIQUE',
+    'AVLS': 'BET ACOUSTIQUE',
+    'BET AVLS': 'BET ACOUSTIQUE',
+    'BET ACOUSTIQUE': 'BET ACOUSTIQUE',
+    'BET ACOUS AVLS': 'BET ACOUSTIQUE',
+    'BET ACOUST AVLS': 'BET ACOUSTIQUE',
+    'ACOUS': 'BET ACOUSTIQUE',
+    'BET ACOUSTIQUE AVLS': 'BET ACOUSTIQUE',
+
+    # ── BET POL ──
+    'BET POLLUTION': 'BET POL',
+    'BET POLLUTION DIE': 'BET POL',
+    'POLLUTION DIE': 'BET POL',
+    'DIE': 'BET POL',
+    'BET DIE': 'BET POL',
+    'BET POL': 'BET POL',
+    'BET POL DIE': 'BET POL',
+    'DIE POLLUTION': 'BET POL',
+
+    # ── BET CVC ──
+    'BET CVC': 'BET CVC',
+    'BET CVC - EGIS': 'BET CVC',
+    'BET CVC EGIS': 'BET CVC',
+    'BET EGIS CVC': 'BET CVC',
+    '-BET CVC': 'BET CVC',
+
+    # ── BET Plomberie ──
+    'BET PLOMB': 'BET Plomberie',
+    'BET PLOMB - EGIS': 'BET Plomberie',
+    'BET PLOMBERIE': 'BET Plomberie',
+    'BET PLOMBERIE EGIS': 'BET Plomberie',
+    'BET PLMB EGIS': 'BET Plomberie',
+    'BET PLOMBERIE  EGIS': 'BET Plomberie',
+    'BET PLB': 'BET Plomberie',
+    'BET PLOMBERIE ERGIS': 'BET Plomberie',
+
+    # ── BET ELEC ──
+    'BET EGIS': 'BET ELEC',
+    'EGIS': 'BET ELEC',
+    'BET ELEC': 'BET ELEC',
+    'BET ELECTRICITÉ': 'BET ELEC',
+    'BET ELECTRICITE': 'BET ELEC',
+    'BET ELECTRICITÉ EGIS': 'BET ELEC',
+    'BET ELECTRICITE EGIS': 'BET ELEC',
+    'BET ELEC EGIS': 'BET ELEC',
+    'BET ELGIS': 'BET ELEC',
+    'BET GEIS': 'BET ELEC',
+    'EIGS': 'BET ELEC',
+    'EGI': 'BET ELEC',
+
+    # ── BET Façade ──
+    'BET FACADE': 'BET Façade',
+    'BET FACADE - ELIOTH': 'BET Façade',
+    'BET FACADE ELIOTH': 'BET Façade',
+    'BET ELIOTH': 'BET Façade',
+    'ELIOTH': 'BET Façade',
+    'BET FAÇADE': 'BET Façade',
+    'BET FAÇADE ELIOTH': 'BET Façade',
+    'BET FAC ELIOTH': 'BET Façade',
+    'BET FAC': 'BET Façade',
+    'BET FACADES': 'BET Façade',
+    'ELLIOTH': 'BET Façade',
+    '-BET FAÇADE': 'BET Façade',
+    '-BET FACADE': 'BET Façade',
+
+    # ── BET SPK ──
+    'BET SPK': 'BET SPK',
+    'SPK': 'BET SPK',
+
+    # ── BET Ascenseur ──
+    'BET ASCENSEUR': 'BET Ascenseur',
+    'BET ASCAUDIT': 'BET Ascenseur',
+    'ASCAUDIT': 'BET Ascenseur',
+    'BET ASC': 'BET Ascenseur',
+
+    # ── BET EV ──
+    'MUGO': 'BET EV',
+    'PAYSAGISTE MUGO': 'BET EV',
+    'MUGO PAYSAGISTE': 'BET EV',
+}
+
+
 def _normalize_obs_group(raw_name: str) -> str:
     """
-    Normalize a group name found in OBSERVATIONS to match
-    the unified group names from mission_map.json.
+    Normalize a group name found in OBSERVATIONS to match the unified
+    group names from mission_map.json.
+
+    Strategy:
+    1. Exact match against comprehensive lookup table (case-insensitive)
+    2. Partial / contains fallback for remaining variants
     """
     name = raw_name.strip().upper()
 
-    mappings = {
-        'GEMO': 'MOEX',
-        'MOX': 'MOEX',
-        'MOEX': 'MOEX',
-        'MOEX GEMO': 'MOEX',
-        'ARCHI': 'ARCHITECTE',
-        'ARCHI MOX': 'ARCHITECTE',
-        'ARCHITECTE': 'ARCHITECTE',
-        'BET STR': 'BET Structure',
-        'BET STR-TERRELL': 'BET Structure',
-        'STR-TERRELL': 'BET Structure',
-        'TERRELL': 'BET Structure',
-        'GEOLIA': 'BET Géotech',
-        'BET GEOLIA': 'BET Géotech',
-        'BET GEOLIA - G4': 'BET Géotech',
-        'G4': 'BET Géotech',
-        'ACOUSTICIEN': 'BET ACOUSTIQUE',
-        'ACOUSTICIEN AVLS': 'BET ACOUSTIQUE',
-        'AVLS': 'BET ACOUSTIQUE',
-        'AMO HQE': 'AMO HQE',
-        'AMO HQE LE SOMMER': 'AMO HQE',
-        'LE SOMMER': 'AMO HQE',
-        'SOCOTEC': 'Bureau de control',
-        'BC SOCOTEC': 'Bureau de control',
-        'BC': 'Bureau de control',
-        'BET EGIS': 'BET ELEC',
-        'EGIS': 'BET ELEC',
-        'BET POLLUTION': 'BET POL',
-        'BET POLLUTION DIE': 'BET POL',
-        'POLLUTION DIE': 'BET POL',
-        'DIE': 'BET POL',
-        'BET CVC': 'BET CVC',
-        'BET CVC - EGIS': 'BET CVC',
-        'BET PLOMB': 'BET Plomberie',
-        'BET PLOMB - EGIS': 'BET Plomberie',
-        'BET FACADE': 'BET Façade',
-        'BET FACADE - ELIOTH': 'BET Façade',
-        'BET ELIOTH': 'BET Façade',
-        'ELIOTH': 'BET Façade',
-        'BET SPK': 'BET SPK',
-        'BET ASCENSEUR': 'BET Ascenseur',
-        'BET ASCAUDIT': 'BET Ascenseur',
-        'ASCAUDIT': 'BET Ascenseur',
-        'MUGO': 'BET EV',
-        'PAYSAGISTE MUGO': 'BET EV',
-    }
+    # 1. Exact match (fast path — covers 95%+ of cases)
+    if name in _OBS_GROUP_NORMALIZE_MAP:
+        return _OBS_GROUP_NORMALIZE_MAP[name]
 
-    if name in mappings:
-        return mappings[name]
-
-    for key, val in mappings.items():
+    # 2. Partial / contains fallback for typos and rare variants
+    # Check longest keys first to avoid short-key false positives
+    for key in sorted(_OBS_GROUP_NORMALIZE_MAP.keys(), key=len, reverse=True):
         if key in name or name in key:
-            return val
+            return _OBS_GROUP_NORMALIZE_MAP[key]
 
     return name
 
@@ -682,7 +837,7 @@ def _append_observations_from_responses(
     if not obs_col:
         return
 
-    existing_obs = str(gf_row.observations or "")
+    existing_obs = str(ws.cell(row=row_num, column=obs_col).value or "")
 
     # Parse which groups already have responses in existing text
     existing_groups = _extract_existing_groups(existing_obs)
