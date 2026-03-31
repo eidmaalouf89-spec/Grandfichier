@@ -26,7 +26,6 @@ from typing import Optional
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
-from openpyxl.worksheet.page import PrintPageSetup
 
 from processing.models import DeliverableRecord, CanonicalResponse, SourceEvidence, GFRow, GFApprobateur
 from processing.config import GF_DATA_START_ROW, GF_HEADER_ROW
@@ -38,21 +37,24 @@ logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # GF standard formatting constants
+# Colors extracted from GF header legend cells C3:M5 — DO NOT CHANGE
 # ---------------------------------------------------------------------------
 GF_FONT = Font(name="Arial Narrow", size=10)
 GF_FONT_BOLD = Font(name="Arial Narrow", size=10, bold=True)
-GF_GREY_FILL = PatternFill(patternType="solid", fgColor="FFD9D9D9")
-GF_NO_FILL = PatternFill(fill_type=None)
 
-_STATUS_FILLS: dict = {
-    "VSO": PatternFill(patternType="solid", fgColor="FF92D050"),
-    "FAV": PatternFill(patternType="solid", fgColor="FF92D050"),
-    "VAO": PatternFill(patternType="solid", fgColor="FFFFFF00"),
-    "REF": PatternFill(patternType="solid", fgColor="FFF4B083"),
-    "DEF": PatternFill(patternType="solid", fgColor="FFFF0000"),
-    "SUS": PatternFill(patternType="solid", fgColor="FFFFC000"),
-    "HM":  PatternFill(patternType="solid", fgColor="FFD9D9D9"),
-    "ANN": PatternFill(patternType="solid", fgColor="FFD9D9D9"),
+# Row fill for ANCIEN rows
+GF_ANCIEN_FILL = PatternFill(patternType="solid", fgColor="FFD9D9D9")
+
+# Status color fills — exact hex from the GF header legend
+_STATUS_FILLS: dict[str, PatternFill] = {
+    "VSO": PatternFill(patternType="solid", fgColor="FFA9D08E"),  # Light green
+    "FAV": PatternFill(patternType="solid", fgColor="FFA9D08E"),  # Light green (same as VSO)
+    "VAO": PatternFill(patternType="solid", fgColor="FFFFD966"),  # Gold
+    "REF": PatternFill(patternType="solid", fgColor="FFF4B083"),  # Salmon/orange
+    "DEF": PatternFill(patternType="solid", fgColor="FFFF3300"),  # Red-orange
+    "SUS": PatternFill(patternType="solid", fgColor="FFFF3300"),  # Red-orange (same as DEF)
+    "HM":  PatternFill(patternType="solid", fgColor="FF9BC2E6"),  # Light blue
+    "ANN": PatternFill(patternType="solid", fgColor="FFF2F2F2"),  # Very light grey
 }
 
 # Approximate character width for auto row-height calculation (Arial Narrow 10pt)
@@ -80,7 +82,7 @@ def _write_date_cell(ws, row: int, col: int, date_str: str) -> None:
         return
     for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%Y-%m-%d %H:%M:%S"):
         try:
-            d = dt.strptime(date_str.strip()[:len(fmt.replace('%', 'x').replace('x', '0'))], fmt)
+            d = dt.strptime(date_str.strip()[:19], fmt)
             cell.value = d
             cell.font = GF_FONT
             if not cell.number_format or cell.number_format == "General":
@@ -499,7 +501,7 @@ def apply_updates(
         )
 
     # Format and cleanup: row coloring, filters, print setup, trim blank rows
-    _format_and_cleanup(wb, gf_rows_by_sheet_row)
+    _format_and_cleanup(wb)
 
     # Save via /tmp to avoid corrupting FUSE state (writing a large xlsx directly
     # to the FUSE-mounted filesystem breaks subsequent open() calls in this process).
@@ -1005,7 +1007,7 @@ def _append_observations_from_responses(
 # Post-processing: formatting, print setup, filters
 # ---------------------------------------------------------------------------
 
-def _format_and_cleanup(wb, gf_rows_by_sheet_row: dict) -> None:
+def _format_and_cleanup(wb) -> None:
     """
     Post-processing pass on the entire output workbook:
     1. Row coloring: ancien → grey, visa global filled → row color, else → white with per-cell status colors
@@ -1083,15 +1085,17 @@ def _format_and_cleanup(wb, gf_rows_by_sheet_row: dict) -> None:
             last_col_for_fill = obs_col or max_col  # fill up to OBSERVATIONS col
 
             if is_ancien:
-                # Rule 1: ANCIEN row → grey out entire row, no status colors
-                for c in range(1, last_col_for_fill + 1):
-                    ws.cell(row=r, column=c).fill = GF_GREY_FILL
+                # Rule 1 (highest priority, overrides all others):
+                # ANCIEN = 1 → grey out the ENTIRE row, including all columns beyond OBSERVATIONS
+                for c in range(1, max_col + 1):
+                    ws.cell(row=r, column=c).fill = GF_ANCIEN_FILL
 
             elif visa_val and visa_val not in ("", "EN_ATTENTE", "NONE"):
-                # Rule 2: VISA GLOBAL filled → entire row takes visa color
+                # Rule 2: VISA GLOBAL filled (and ANCIEN != 1) → entire row takes visa color
+                # e.g. VAO → #FFD966 across ALL columns; overrides per-cell status colors
                 row_fill = _get_status_fill(visa_val)
                 if row_fill:
-                    for c in range(1, last_col_for_fill + 1):
+                    for c in range(1, max_col + 1):
                         ws.cell(row=r, column=c).fill = row_fill
 
             else:
