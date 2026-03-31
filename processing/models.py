@@ -151,6 +151,7 @@ class GFRow:
     visa_global: str          # current VISA GLOBAL value
     observations: str         # current OBSERVATIONS text
     date_recept: str = ""     # DATE DE RECEPTION from GF (dd/mm/yyyy or raw)
+    date_diff: str = ""       # DATE DIFFUSION from GF (dd/mm/yyyy or raw) — submittal creation date
     approbateurs: list[GFApprobateur] = field(default_factory=list)
 
 

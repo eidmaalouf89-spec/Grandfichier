@@ -172,6 +172,7 @@ def read_grandfichier(excel_path: str | Path) -> tuple[list[GFRow], dict]:
             indice      = _cell_str(ws, row_num, col_map["indice"] + 1)
             visa_global  = _cell_str(ws, row_num, col_map["visa_global"] + 1)
             date_recept  = _cell_str(ws, row_num, col_map["date_recept"] + 1)
+            date_diff    = _cell_str(ws, row_num, col_map["date_diff"] + 1)
 
             # Niveau and zone vary by variant
             niveau = ""
@@ -221,6 +222,7 @@ def read_grandfichier(excel_path: str | Path) -> tuple[list[GFRow], dict]:
                 visa_global=visa_global,
                 observations=observations,
                 date_recept=date_recept,
+                date_diff=date_diff,
                 approbateurs=appro_for_row,
             )
             all_rows.append(gf_row)

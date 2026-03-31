@@ -5,6 +5,7 @@ Flow: GrandFichier is the master. For each GF row, look up matching GED response
 by NUMERO. No guessing, no new rows, no SAS REF logic needed.
 """
 import logging
+from datetime import datetime, timedelta
 from typing import Optional
 
 from processing.models import CanonicalResponse, GFRow
@@ -197,10 +198,67 @@ def lookup_ged_for_gf(
     return matched_gf, unmatched_gf, orphan_ged
 
 
+# Maximum allowed gap (days) between GF submittal date and GED response date.
+# If the GED response is older than this many days before the GF submittal,
+# it's almost certainly from a previous workflow with a reused NUMERO.
+_MAX_DATE_GAP_DAYS = 30
+
+
+def _parse_any_date(date_str: str):
+    """Parse a date string in various formats. Returns datetime or None."""
+    if not date_str:
+        return None
+    date_str = str(date_str).strip()
+    # Handle datetime objects from openpyxl
+    if hasattr(date_str, 'date'):
+        return date_str
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%Y-%m-%d %H:%M:%S", "%d/%m/%Y %H:%M"):
+        try:
+            return datetime.strptime(date_str[:len(fmt.replace('%', 'x'))], fmt)
+        except (ValueError, TypeError):
+            continue
+    # Try ISO prefix
+    try:
+        return datetime.fromisoformat(date_str[:10])
+    except (ValueError, TypeError):
+        return None
+
+
+def _dates_within_range(gf_date_str: str, ged_response_date_str: str, max_days: int = _MAX_DATE_GAP_DAYS) -> bool:
+    """
+    Check if the GED response date is plausible for this GF submittal.
+    Returns True if the response is within max_days before the submittal date,
+    or at any time after it (responses can come after submission).
+    Returns True if either date is unparseable (fail-open: don't block on missing data).
+    """
+    gf_date = _parse_any_date(gf_date_str)
+    ged_date = _parse_any_date(ged_response_date_str)
+    if gf_date is None or ged_date is None:
+        return True  # Can't compare — allow the match (fail-open)
+    # GED response must not be more than max_days BEFORE the GF submittal
+    # (a response from Feb 2025 for a submittal from Mar 2026 is clearly wrong)
+    earliest_allowed = gf_date - timedelta(days=max_days)
+    return ged_date >= earliest_allowed
+
+
 def _score_ged_to_gf(cr: CanonicalResponse, gf_row: GFRow) -> int:
     """Score a GED record against a GF row for disambiguation."""
     score = 0
     doc_key_upper = gf_row.document_key.upper() if gf_row.document_key else ""
+
+    # HARD FILTER 1: TYPE_DOC — if both have it and they differ, reject immediately.
+    # Prevents cross-contamination when NUMEROs are reused with different doc types.
+    if cr.type_doc and gf_row.type_doc:
+        if str(cr.type_doc).strip().upper() != str(gf_row.type_doc).strip().upper():
+            return 0
+        score += 3
+
+    # HARD FILTER 2: Date proximity — GED response date must be plausible for this GF submittal.
+    # Use date_diff (Date diffusion) as the GF reference; fall back to date_recept.
+    gf_ref_date = gf_row.date_diff or gf_row.date_recept
+    ged_ref_date = cr.response_date
+    if not _dates_within_range(gf_ref_date, ged_ref_date):
+        return 0
 
     # INDICE +10
     if cr.indice and gf_row.indice:
@@ -211,11 +269,6 @@ def _score_ged_to_gf(cr: CanonicalResponse, gf_row: GFRow) -> int:
     if cr.emetteur and doc_key_upper:
         if str(cr.emetteur).strip().upper() in doc_key_upper:
             score += 5
-
-    # TYPE_DOC +3
-    if cr.type_doc and gf_row.type_doc:
-        if str(cr.type_doc).strip().upper() == str(gf_row.type_doc).strip().upper():
-            score += 3
 
     # LOT +2
     if cr.lot and gf_row.lot:
