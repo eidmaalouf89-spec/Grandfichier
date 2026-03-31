@@ -119,29 +119,33 @@ def lookup_ged_for_gf(
 ) -> tuple[list, list, list]:
     """
     For each GF row, look up matching GED responses by NUMERO.
-    When multiple GED responses share the same NUMERO, use field scoring
-    to pick those matching INDICE (same revision).
+
+    CRITICAL: The same GED response CAN and SHOULD be matched to
+    MULTIPLE GF rows if they share the same NUMERO+INDICE. This is
+    normal — the GF has one row per LOT variant for the same document.
 
     Returns:
-        matched_gf: list of (GFRow, list[CanonicalResponse]) — GF rows with GED data
-        unmatched_gf: list of GFRow — GF rows with no GED data (normal, leave untouched)
-        orphan_ged: list of CanonicalResponse — GED docs not claimed by any GF row
+        matched_gf: list of (GFRow, list[CanonicalResponse])
+        unmatched_gf: list of GFRow
+        orphan_ged: list of CanonicalResponse — GED docs not matching ANY GF row
     """
     matched_gf = []
     unmatched_gf = []
-    claimed_ged_ids = set()  # track which GED records were matched
+
+    # Track which (NUMERO, INDICE) pairs were matched to at least one GF row.
+    # Used ONLY for orphan detection — NOT for filtering during matching.
+    matched_ged_doc_ids: set[tuple[str, str]] = set()
 
     for gf_row in gf_rows:
         gf_num = normalize_numero(gf_row.numero)
 
-        # OLD sheets: index their GED records (so they don't appear as orphans)
+        # OLD sheets: claim their GED doc IDs (so they don't appear as orphans)
         # but NEVER write to them — skip from matched_gf entirely
         if gf_row.sheet_name.startswith(OLD_SHEET_PREFIX):
             if gf_num:
                 ged_candidates = ged_index.find(gf_num)
                 for cr in ged_candidates:
-                    if _score_ged_to_gf(cr, gf_row) >= 10:
-                        claimed_ged_ids.add(id(cr))
+                    matched_ged_doc_ids.add((normalize_numero(cr.numero), cr.indice.upper()))
             match_summary.record("GF_OLD_SHEET_SKIP")
             continue  # DO NOT add to matched_gf
 
@@ -155,28 +159,40 @@ def lookup_ged_for_gf(
             match_summary.record("GF_NO_GED")
             continue
 
-        # Pick candidates that match INDICE (same revision)
+        # Find all GED responses where INDICE matches this GF row
         best_responses = []
         for cr in ged_candidates:
             score = _score_ged_to_gf(cr, gf_row)
-            if score >= 10:  # INDICE matches
+            if score >= 10:  # INDICE matches (10 points)
                 best_responses.append(cr)
-                claimed_ged_ids.add(id(cr))
+                matched_ged_doc_ids.add((normalize_numero(cr.numero), cr.indice.upper()))
 
         if best_responses:
             matched_gf.append((gf_row, best_responses))
             match_summary.record("GF_MATCHED")
         else:
-            # GED has this NUMERO but different INDICE — GF row stays untouched
+            # GED has this NUMERO but no matching INDICE
             unmatched_gf.append(gf_row)
             match_summary.record("GF_INDICE_MISMATCH")
 
-    # Orphan GED docs: in GED but not claimed by any GF row
-    orphan_ged = [cr for cr in _flatten_unique(ged_index) if id(cr) not in claimed_ged_ids]
+    # Orphan GED docs: (NUMERO, INDICE) pairs never matched to any GF row
+    all_ged_doc_ids: set[tuple[str, str]] = set()
+    orphan_ged = []
+    seen_orphan: set[tuple[str, str]] = set()
+
+    for num in ged_index.all_numeros:
+        for cr in ged_index.find(num):
+            doc_id = (normalize_numero(cr.numero), cr.indice.strip().upper())
+            all_ged_doc_ids.add(doc_id)
+            if doc_id not in matched_ged_doc_ids and doc_id not in seen_orphan:
+                seen_orphan.add(doc_id)
+                orphan_ged.append(cr)
 
     logger.info(
-        "GF lookup complete: %d GF rows matched, %d unmatched, %d orphan GED docs",
+        "GF lookup complete: %d GF rows matched, %d unmatched, %d orphan GED docs "
+        "(from %d unique GED doc IDs, %d matched to at least one GF row)",
         len(matched_gf), len(unmatched_gf), len(orphan_ged),
+        len(all_ged_doc_ids), len(matched_ged_doc_ids),
     )
     return matched_gf, unmatched_gf, orphan_ged
 
