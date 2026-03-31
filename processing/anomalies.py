@@ -125,50 +125,6 @@ class AnomalyLogger:
             },
         ))
 
-    def log_sas_ref_disregard(
-        self, source_file: str, source_row: str,
-        document_key: str, numero: str, indice: str, sheet_name: str
-    ) -> None:
-        """
-        GED record matches a SAS REF'd GF row — confirmed same document by
-        indice / name / date proximity → disregarded, no update written.
-        """
-        self.add(AnomalyRecord(
-            anomaly_type="SAS_REF_DISREGARD",
-            severity="DEBUG",
-            source_type="GED",
-            source_file=source_file,
-            source_row_or_page=source_row,
-            document_key=document_key,
-            description=(
-                f"Document ({numero}/{indice}) matches SAS REF'd GF row on sheet '{sheet_name}' "
-                f"— same document confirmed, disregarded"
-            ),
-            raw_data={"numero": numero, "indice": indice, "sheet": sheet_name},
-        ))
-
-    def log_sas_ref_new_submittal(
-        self, source_file: str, source_row: str,
-        document_key: str, numero: str, indice: str, sheet_name: str
-    ) -> None:
-        """
-        GED record shares NUMERO with a SAS REF'd GF row but is a genuinely
-        different document → new row created.
-        """
-        self.add(AnomalyRecord(
-            anomaly_type="SAS_REF_NEW_SUBMITTAL",
-            severity="INFO",
-            source_type="GED",
-            source_file=source_file,
-            source_row_or_page=source_row,
-            document_key=document_key,
-            description=(
-                f"Document ({numero}/{indice}) shares NUMERO with SAS REF'd row on "
-                f"sheet '{sheet_name}' but is a different submittal → new row created"
-            ),
-            raw_data={"numero": numero, "indice": indice, "sheet": sheet_name},
-        ))
-
     def log_status_conflict(
         self, source_type: str, source_file: str, source_row: str,
         document_key: str, field: str, value_a: str, source_a: str,

@@ -1,226 +1,91 @@
 """
-JANSA GrandFichier Updater — NUMERO-anchored matching engine (V3.0)
+JANSA GrandFichier Updater — GF-Master matching engine (V4.0)
 
-Replaces 4-level composite-key cascade with NUMERO-anchored field scoring.
-
-Step 1: Index GF rows by normalized NUMERO
-Step 2: Find GED candidates by NUMERO (with single-embedded-zero tolerance)
-Step 3: Score candidates by field comparison; pick best
-Step 4: No match → UNMATCHED
+Flow: GrandFichier is the master. For each GF row, look up matching GED responses
+by NUMERO. No guessing, no new rows, no SAS REF logic needed.
 """
 import logging
 from typing import Optional
 
 from processing.models import CanonicalResponse, GFRow
-from processing.canonical import normalize_numero, normalize_lot, is_same_sas_ref_document
+from processing.canonical import normalize_numero, normalize_lot
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Confidence levels (PATCH 3.0)
-# ---------------------------------------------------------------------------
-CONFIDENCE_HIGH   = "HIGH"
-CONFIDENCE_MEDIUM = "MEDIUM"
-CONFIDENCE_LOW    = "LOW"
-CONFIDENCE_NONE   = "UNMATCHED"
 
-MATCH_NUMERO_HIGH   = "NUMERO_HIGH_SCORE"
-MATCH_NUMERO_MEDIUM = "NUMERO_MEDIUM_SCORE"
-MATCH_NUMERO_LOW    = "NUMERO_LOW_SCORE"
-MATCH_NONE          = "UNMATCHED"
-
-# Field score weights
-# PATCH 10: BEN dual-sheet — sheets prefixed "OLD " are deprioritized
-OLD_SHEET_PREFIX = "OLD "
-
-SCORE_INDICE     = 10
-SCORE_EMETTEUR   = 5
-SCORE_TYPE_DOC   = 3
-SCORE_LOT        = 2
-SCORE_SPECIALITE = 1
-SCORE_BATIMENT   = 1
-
-
-class GFNumeroIndex:
+class GEDNumeroIndex:
     """
-    Pre-built index of GrandFichier rows by normalized NUMERO.
-
-    Index structure: dict[str, list[GFRow]]
-    NUMERO is the real document anchor. Fields are used only for disambiguation
-    when multiple GF rows share the same NUMERO.
+    Index GED CanonicalResponse records by normalized NUMERO.
+    Structure: normalized_numero → list[CanonicalResponse]
     """
-
-    def __init__(self, gf_rows: list[GFRow]):
-        # normalized NUMERO → list of GF rows with that NUMERO
-        self._index: dict[str, list[GFRow]] = {}
-        for row in gf_rows:
-            num = normalize_numero(row.numero)
+    def __init__(self, ged_records: list[CanonicalResponse]):
+        self._index: dict[str, list[CanonicalResponse]] = {}
+        for cr in ged_records:
+            num = normalize_numero(cr.numero)
             if num:
-                self._index.setdefault(num, []).append(row)
-
+                self._index.setdefault(num, []).append(cr)
         logger.info(
-            "GFNumeroIndex built: %d unique NUMEROs from %d rows",
-            len(self._index), len(gf_rows),
+            "GEDNumeroIndex built: %d unique NUMEROs from %d records",
+            len(self._index), len(ged_records),
         )
 
-    def _find_candidates(self, ged_numero: str) -> list[GFRow]:
+    def find(self, numero: str) -> list[CanonicalResponse]:
         """
-        Find GF candidates for a normalized GED NUMERO.
-        Applies single-embedded-zero tolerance when no direct match is found.
+        Find GED responses for a given NUMERO.
+        Strict match with leading-zero normalization.
+        Falls back to single-embedded-zero tolerance.
         """
-        # Strict match
-        candidates = self._index.get(ged_numero, [])
-        if candidates:
-            return candidates
+        num = normalize_numero(numero)
+        if not num:
+            return []
 
-        # Tolerance A: remove one internal '0' from GED NUMERO
-        for i, c in enumerate(ged_numero):
+        # Strict match
+        if num in self._index:
+            return self._index[num]
+
+        # Tolerance: remove one internal '0' from GF NUMERO
+        for i, c in enumerate(num):
             if c == '0' and i > 0:
-                variant = ged_numero[:i] + ged_numero[i + 1:]
+                variant = num[:i] + num[i + 1:]
                 if variant in self._index:
                     return self._index[variant]
 
-        # Tolerance B: GF has an extra '0' that, when removed, equals GED NUMERO
-        for gf_num, rows in self._index.items():
-            for i, c in enumerate(gf_num):
+        # Tolerance: GED has extra '0'
+        for ged_num, records in self._index.items():
+            for i, c in enumerate(ged_num):
                 if c == '0' and i > 0:
-                    if gf_num[:i] + gf_num[i + 1:] == ged_numero:
-                        return rows
-                    break  # only test the first internal zero per gf_num
-
+                    if ged_num[:i] + ged_num[i + 1:] == num:
+                        return records
+                    break
         return []
 
-    def _score(self, cr: CanonicalResponse, gf_row: GFRow) -> int:
-        """
-        Score a GF candidate row against a GED CanonicalResponse.
-        Fields not directly available on GFRow are checked via substring on document_key.
-        """
-        score = 0
-        doc_key_upper = gf_row.document_key.upper() if gf_row.document_key else ""
-
-        # INDICE +10 — direct field comparison
-        if cr.indice and gf_row.indice:
-            if str(cr.indice).strip().upper() == str(gf_row.indice).strip().upper():
-                score += SCORE_INDICE
-
-        # EMETTEUR +5 — substring presence in composite document key
-        if cr.emetteur and doc_key_upper:
-            if str(cr.emetteur).strip().upper() in doc_key_upper:
-                score += SCORE_EMETTEUR
-
-        # TYPE_DOC +3 — direct field comparison
-        if cr.type_doc and gf_row.type_doc:
-            if str(cr.type_doc).strip().upper() == str(gf_row.type_doc).strip().upper():
-                score += SCORE_TYPE_DOC
-
-        # LOT +2 — normalized comparison (strip leading alpha prefix)
-        if cr.lot and gf_row.lot:
-            if normalize_lot(cr.lot) == normalize_lot(gf_row.lot):
-                score += SCORE_LOT
-
-        # SPECIALITE +1 — substring in document_key (field not on GFRow)
-        if hasattr(cr, 'specialite') and cr.specialite and doc_key_upper:
-            if str(cr.specialite).strip().upper() in doc_key_upper:
-                score += SCORE_SPECIALITE
-
-        # BATIMENT +1 — substring in document_key
-        if cr.batiment and doc_key_upper:
-            if str(cr.batiment).strip().upper() in doc_key_upper:
-                score += SCORE_BATIMENT
-
-        return score
-
-    def match(self, cr: CanonicalResponse) -> Optional[GFRow]:
-        """
-        Match a CanonicalResponse to the best-scoring GFRow.
-        Updates cr.confidence and cr.match_strategy in place.
-        Returns the matched GFRow or None.
-        """
-        ged_numero = normalize_numero(cr.numero)
-        if not ged_numero:
-            cr.confidence = CONFIDENCE_NONE
-            cr.match_strategy = MATCH_NONE
-            return None
-
-        candidates = self._find_candidates(ged_numero)
-        if not candidates:
-            cr.confidence = CONFIDENCE_NONE
-            cr.match_strategy = MATCH_NONE
-            return None
-
-        # PATCH 10: Prefer NEW sheet over OLD sheet when both contain the same NUMERO
-        # (applies to LOT 31 à 34-IN-BX-CFO-BENTIN vs OLD 31 à 34-IN-BX-CFO-BENTIN)
-        if len(candidates) > 1:
-            non_old = [c for c in candidates if not c.sheet_name.startswith(OLD_SHEET_PREFIX)]
-            if non_old:
-                candidates = non_old  # drop OLD sheet candidates
-
-        if len(candidates) == 1:
-            best_row = candidates[0]
-            best_score = self._score(cr, best_row)
-        else:
-            # Score all candidates, pick highest
-            scored = [(self._score(cr, row), row) for row in candidates]
-            scored.sort(key=lambda x: x[0], reverse=True)
-            best_score, best_row = scored[0]
-
-        # PATCH 11: SAS REF disregard check
-        # If the best GF candidate has SAS REF and GED indice matches, check for same document.
-        if best_row.has_sas_ref and cr.indice and cr.indice == best_row.indice:
-            if is_same_sas_ref_document(cr, best_row):
-                # Same refused document — disregard entirely, do NOT update
-                cr.match_strategy = "SAS_REF_DISREGARD"
-                cr.confidence = CONFIDENCE_NONE
-                logger.debug(
-                    "SAS REF disregard: %s indice=%s matches GF sheet=%s row=%d",
-                    cr.document_key, cr.indice, best_row.sheet_name, best_row.row_number,
-                )
-                return None
-            # Different document with same NUMERO → treat as unmatched (new row)
-
-        # Assign confidence tier from score
-        if best_score >= 15:
-            cr.confidence = CONFIDENCE_HIGH
-            cr.match_strategy = MATCH_NUMERO_HIGH
-        elif best_score >= 10:
-            cr.confidence = CONFIDENCE_MEDIUM
-            cr.match_strategy = MATCH_NUMERO_MEDIUM
-        else:
-            cr.confidence = CONFIDENCE_LOW
-            cr.match_strategy = MATCH_NUMERO_LOW
-            logger.warning(
-                "Low-confidence match (score=%d): doc=%s → sheet=%s row=%d",
-                best_score, cr.document_key, best_row.sheet_name, best_row.row_number,
-            )
-
-        return best_row
+    @property
+    def all_numeros(self) -> set[str]:
+        """All normalized NUMEROs in the index."""
+        return set(self._index.keys())
 
 
 class MatchSummary:
-    """Tracks match statistics per confidence tier."""
+    """Tracks match statistics for GF-master lookup."""
+
+    LEVELS = ["GF_MATCHED", "GF_INDICE_MISMATCH", "GF_NO_GED"]
 
     def __init__(self):
-        self._counts: dict[str, int] = {
-            MATCH_NUMERO_HIGH:    0,
-            MATCH_NUMERO_MEDIUM:  0,
-            MATCH_NUMERO_LOW:     0,
-            "SAS_REF_DISREGARD":  0,
-            MATCH_NONE:           0,
-        }
+        self._counts: dict[str, int] = {lvl: 0 for lvl in self.LEVELS}
 
     def record(self, strategy: str) -> None:
         if strategy in self._counts:
             self._counts[strategy] += 1
         else:
-            self._counts[MATCH_NONE] += 1
+            self._counts["GF_NO_GED"] += 1
 
     @property
     def total_matched(self) -> int:
-        return sum(v for k, v in self._counts.items() if k != MATCH_NONE)
+        return self._counts.get("GF_MATCHED", 0)
 
     @property
     def total_unmatched(self) -> int:
-        return self._counts[MATCH_NONE]
+        return self._counts.get("GF_NO_GED", 0) + self._counts.get("GF_INDICE_MISMATCH", 0)
 
     @property
     def total(self) -> int:
@@ -234,8 +99,7 @@ class MatchSummary:
                 "count": self._counts.get(level, 0),
                 "percentage": f"{100 * self._counts.get(level, 0) / total:.1f}%",
             }
-            for level in [MATCH_NUMERO_HIGH, MATCH_NUMERO_MEDIUM, MATCH_NUMERO_LOW,
-                          "SAS_REF_DISREGARD", MATCH_NONE]
+            for level in self.LEVELS
         ]
 
     def log_summary(self) -> None:
@@ -244,37 +108,100 @@ class MatchSummary:
             logger.info("  %-30s %5d  (%s)", row["match_level"], row["count"], row["percentage"])
 
 
-def match_all(
-    canonical_records: list[CanonicalResponse],
-    gf_index: GFNumeroIndex,
-    summary: Optional[MatchSummary] = None,
-) -> tuple[list[CanonicalResponse], list[CanonicalResponse]]:
+def lookup_ged_for_gf(
+    gf_rows: list[GFRow],
+    ged_index: GEDNumeroIndex,
+    match_summary: MatchSummary,
+    anomaly_logger,
+) -> tuple[list, list, list]:
     """
-    Run NUMERO-anchored matching for all CanonicalResponse records.
-    Updates each record's .confidence, .match_strategy, .gf_sheet, .gf_row in place.
+    For each GF row, look up matching GED responses by NUMERO.
+    When multiple GED responses share the same NUMERO, use field scoring
+    to pick those matching INDICE (same revision).
 
     Returns:
-        (matched_records, unmatched_records)
+        matched_gf: list of (GFRow, list[CanonicalResponse]) — GF rows with GED data
+        unmatched_gf: list of GFRow — GF rows with no GED data (normal, leave untouched)
+        orphan_ged: list of CanonicalResponse — GED docs not claimed by any GF row
     """
-    matched = []
-    unmatched = []
+    matched_gf = []
+    unmatched_gf = []
+    claimed_ged_ids = set()  # track which GED records were matched
 
-    for cr in canonical_records:
-        gf_row = gf_index.match(cr)
-        if gf_row is not None:
-            cr.gf_sheet = gf_row.sheet_name
-            cr.gf_row = gf_row.row_number
-            matched.append(cr)
-        elif cr.match_strategy == "SAS_REF_DISREGARD":
-            # Same document as a SAS REF'd GF row — do NOT add as new doc
-            pass
+    for gf_row in gf_rows:
+        gf_num = normalize_numero(gf_row.numero)
+        if not gf_num:
+            unmatched_gf.append(gf_row)
+            continue
+
+        ged_candidates = ged_index.find(gf_num)
+        if not ged_candidates:
+            unmatched_gf.append(gf_row)
+            match_summary.record("GF_NO_GED")
+            continue
+
+        # Pick candidates that match INDICE (same revision)
+        best_responses = []
+        for cr in ged_candidates:
+            score = _score_ged_to_gf(cr, gf_row)
+            if score >= 10:  # INDICE matches
+                best_responses.append(cr)
+                claimed_ged_ids.add(id(cr))
+
+        if best_responses:
+            matched_gf.append((gf_row, best_responses))
+            match_summary.record("GF_MATCHED")
         else:
-            unmatched.append(cr)
-        if summary:
-            summary.record(cr.match_strategy)
+            # GED has this NUMERO but different INDICE — GF row stays untouched
+            unmatched_gf.append(gf_row)
+            match_summary.record("GF_INDICE_MISMATCH")
+
+    # Orphan GED docs: in GED but not claimed by any GF row
+    orphan_ged = [cr for cr in _flatten_unique(ged_index) if id(cr) not in claimed_ged_ids]
 
     logger.info(
-        "Matching complete: %d matched, %d unmatched (total %d)",
-        len(matched), len(unmatched), len(canonical_records),
+        "GF lookup complete: %d GF rows matched, %d unmatched, %d orphan GED docs",
+        len(matched_gf), len(unmatched_gf), len(orphan_ged),
     )
-    return matched, unmatched
+    return matched_gf, unmatched_gf, orphan_ged
+
+
+def _score_ged_to_gf(cr: CanonicalResponse, gf_row: GFRow) -> int:
+    """Score a GED record against a GF row for disambiguation."""
+    score = 0
+    doc_key_upper = gf_row.document_key.upper() if gf_row.document_key else ""
+
+    # INDICE +10
+    if cr.indice and gf_row.indice:
+        if str(cr.indice).strip().upper() == str(gf_row.indice).strip().upper():
+            score += 10
+
+    # EMETTEUR +5
+    if cr.emetteur and doc_key_upper:
+        if str(cr.emetteur).strip().upper() in doc_key_upper:
+            score += 5
+
+    # TYPE_DOC +3
+    if cr.type_doc and gf_row.type_doc:
+        if str(cr.type_doc).strip().upper() == str(gf_row.type_doc).strip().upper():
+            score += 3
+
+    # LOT +2
+    if cr.lot and gf_row.lot:
+        if normalize_lot(cr.lot) == normalize_lot(gf_row.lot):
+            score += 2
+
+    return score
+
+
+def _flatten_unique(ged_index: GEDNumeroIndex) -> list[CanonicalResponse]:
+    """Get one representative CanonicalResponse per unique document (NUMERO+INDICE)."""
+    seen = set()
+    result = []
+    for num in ged_index.all_numeros:
+        for cr in ged_index.find(num):
+            doc_id = (cr.numero, cr.indice)
+            if doc_id not in seen:
+                seen.add(doc_id)
+                result.append(cr)
+    return result

@@ -11,13 +11,6 @@ Update rules (V2):
 - Never overwrite existing data with empty / pending (PATCH 5)
 - OBSERVATIONS: append new comments from PDF source only — DO NOT overwrite
 - Groups with no GF column (MOEX SAS, BET VRD, etc.): logged as NO_GF_COLUMN, not written
-
-Status tracking column (added after OBSERVATIONS):
-- Header "MISE À JOUR" written once in row 7 per modified sheet
-- Existing rows that were updated: "Edited" written in this column
-- New rows (GED but not in GF): "New" written in this column
-
-New rows also get "AJOUT_AUTO_GED" in the SOURCE column if present.
 """
 import csv
 import logging
@@ -66,17 +59,25 @@ def _is_newer(new_iso: str, existing_str: str) -> bool:
     return compare_dates(new_d, existing_d) > 0
 
 
-def should_update(old_value: str, new_value: str, new_status: str = "") -> bool:
+def should_update(old_value: str, new_value: str, new_status: str = "", is_visa_global: bool = False) -> bool:
     """
-    Return True only if the update adds real information (PATCH 5).
-    - Never overwrite with empty
-    - Never overwrite existing data with pending/no-response status
+    Return True only if the update adds real information.
+    - Never write empty or pending statuses
+    - For VISA GLOBAL: HM never overwrites a real decision (VAO, VSO, REF, DEF, FAV)
     """
     effective = new_status or new_value
     if not effective:
         return False
-    if effective in ("EN_ATTENTE", "NONE", "") and old_value:
+
+    # Never write pending statuses
+    if effective in ("EN_ATTENTE", "NONE", ""):
         return False
+
+    # For VISA GLOBAL: HM (Hors Mission) must not overwrite a real visa decision
+    if is_visa_global and effective == "HM" and old_value:
+        if old_value.upper().strip() in ("VAO", "VSO", "REF", "DEF", "FAV"):
+            return False
+
     return True
 
 
@@ -113,29 +114,6 @@ def _resolve_appro_for_group(
             if c_lower in a_lower or a_lower in c_lower:
                 return appro_obj
     return None
-
-
-# ---------------------------------------------------------------------------
-# Status column helper (MISE À JOUR)
-# ---------------------------------------------------------------------------
-
-_status_header_sheets: set[str] = set()
-
-
-def _get_status_col(ws, obs_col: Optional[int]) -> int:
-    """
-    Return the 1-based column index for the 'MISE À JOUR' tracking column
-    (immediately to the right of OBSERVATIONS). Writes the header in row 7
-    the first time a given sheet is touched within this process run.
-    """
-    status_col = (obs_col + 1) if obs_col else ((ws.max_column or 1) + 1)
-    sheet_key = f"{id(ws)}:{ws.title}"
-    if sheet_key not in _status_header_sheets:
-        header_cell = ws.cell(row=GF_HEADER_ROW, column=status_col)
-        if not header_cell.value:
-            header_cell.value = "MISE À JOUR"
-        _status_header_sheets.add(sheet_key)
-    return status_col
 
 
 # Per-sheet column cache — populated once per workbook open (keyed by sheet title)
@@ -179,19 +157,6 @@ def _find_date_contrat_col(ws, visa_global_col: int) -> int:
     return _date_contrat_col_cache[key]
 
 
-def _find_source_col(ws, obs_col: Optional[int], max_col: int) -> Optional[int]:
-    """
-    Find the SOURCE column (tagged AJOUT_AUTO_GED for new rows).
-    Searches row 7 for a 'SOURCE' header near the end of the sheet.
-    """
-    search_from = (obs_col or max_col) - 2
-    for c in range(max(search_from, 1), max_col + 5):
-        val = str(ws.cell(row=GF_HEADER_ROW, column=c).value or "").strip().upper()
-        if val == "SOURCE":
-            return c
-    return None
-
-
 # ---------------------------------------------------------------------------
 # Main writer
 # ---------------------------------------------------------------------------
@@ -204,8 +169,6 @@ def apply_updates(
     source_priority: dict,
     anomaly_logger: AnomalyLogger,
     output_path: str | Path,
-    unmatched_records: list = None,
-    gf_rows: list = None,
     pdf_only: bool = False,
 ) -> tuple[list[SourceEvidence], int]:
     """
@@ -215,12 +178,10 @@ def apply_updates(
         source_grandfichier: path to the original GrandFichier .xlsx
         deliverables: list of DeliverableRecord (from merge_engine)
         gf_rows_by_sheet_row: dict (sheet_name, row_number) → GFRow
-        mission_map: loaded mission_map.json (v2.0 bidirectional format)
+        mission_map: loaded mission_map.json
         source_priority: loaded source_priority.json
         anomaly_logger: AnomalyLogger instance
         output_path: where to save the updated workbook
-        unmatched_records: list of CanonicalResponse for NEW_DOCUMENT rows (optional)
-        gf_rows: full list of GFRow for lot→sheet routing (optional)
         pdf_only: if True, only update OBSERVATIONS (PDF pass)
 
     Returns:
@@ -233,7 +194,6 @@ def apply_updates(
     shutil.copy2(str(source_grandfichier), str(output_path))
     logger.info("Copied GrandFichier to: %s", output_path)
 
-    _status_header_sheets.clear()
     _visa_global_col_cache.clear()
     _date_contrat_col_cache.clear()
 
@@ -244,9 +204,6 @@ def apply_updates(
     # Pre-build mission_map lookups
     no_gf_col_groups: set[str] = set(mission_map.get("no_gf_column", []))
     special_groups: dict[str, str] = mission_map.get("special_groups", {})
-
-    # Track which (sheet, row) pairs were actually modified for MISE À JOUR column
-    edited_rows: dict[str, set[int]] = defaultdict(set)
 
     for drec in deliverables:
         sheet_name = drec.gf_sheet
@@ -348,7 +305,6 @@ def apply_updates(
                         ev.update_reason += " [ANCIEN row]"
                     evidence.append(ev)
                     fields_updated += 1
-                    edited_rows[sheet_name].add(row_num)
 
             # ── Write DATE ──
             if best_date and best_date.response_date:
@@ -368,7 +324,6 @@ def apply_updates(
                         update_reason="GED response date is newer",
                     ))
                     fields_updated += 1
-                    edited_rows[sheet_name].add(row_num)
 
         # ── Write VISA GLOBAL + DATE CONTRACTUELLE VISA SYNTHESE from MOEX response ──
         if moex_responses and not pdf_only:
@@ -383,7 +338,7 @@ def apply_updates(
             if best_moex_s and best_moex_s.normalized_status:
                 new_vg  = best_moex_s.normalized_status
                 old_vg  = str(ws.cell(row=row_num, column=visa_col).value or "")
-                if should_update(old_vg, new_vg, new_vg) and new_vg != old_vg:
+                if should_update(old_vg, new_vg, new_vg, is_visa_global=True) and new_vg != old_vg:
                     ws.cell(row=row_num, column=visa_col).value = new_vg
                     evidence.append(SourceEvidence(
                         sheet_name=sheet_name,
@@ -397,7 +352,6 @@ def apply_updates(
                         update_reason="MOEX response — VISA GLOBAL verbatim (not computed)",
                     ))
                     fields_updated += 1
-                    edited_rows[sheet_name].add(row_num)
 
             # DATE CONTRACTUELLE VISA SYNTHESE — MOEX response date
             if best_moex_d and best_moex_d.response_date:
@@ -417,34 +371,12 @@ def apply_updates(
                         update_reason="MOEX response date",
                     ))
                     fields_updated += 1
-                    edited_rows[sheet_name].add(row_num)
 
         # ── Append OBSERVATIONS (GED pass only — PDF appends handled separately) ──
         if not pdf_only:
             _append_observations_from_responses(
                 ws, gf_row, drec.responses, row_num, sheet_name, evidence
             )
-
-    # ── Write "Edited" in MISE À JOUR column ──
-    if edited_rows:
-        from processing.grandfichier_reader import _detect_variant, _find_observations_col, _read_approbateurs
-        for sname, row_set in edited_rows.items():
-            if sname not in wb.sheetnames:
-                continue
-            ws = wb[sname]
-            _, col_map = _detect_variant(ws)
-            appros = _read_approbateurs(ws, col_map, ws.max_column or 60)
-            obs_col = _find_observations_col(ws, appros, col_map, ws.max_column or 60)
-            status_col = _get_status_col(ws, obs_col)
-            for row_num in row_set:
-                ws.cell(row=row_num, column=status_col).value = "Edited"
-        logger.info("Wrote 'Edited' for %d rows across %d sheets",
-                    sum(len(v) for v in edited_rows.values()), len(edited_rows))
-
-    # ── Append new documents (unmatched GED records) ──
-    if unmatched_records and gf_rows:
-        new_appended = append_new_documents(wb, unmatched_records, gf_rows, evidence)
-        fields_updated += new_appended
 
     # Save via /tmp to avoid corrupting FUSE state (writing a large xlsx directly
     # to the FUSE-mounted filesystem breaks subsequent open() calls in this process).
@@ -538,130 +470,54 @@ def _append_observations_from_responses(
 
 
 # ---------------------------------------------------------------------------
-# New document appender
+# Orphan GED export
 # ---------------------------------------------------------------------------
 
-def append_new_documents(
-    wb: openpyxl.Workbook,
-    unmatched_records: list["CanonicalResponse"],
-    gf_rows: list["GFRow"],
-    evidence: list[SourceEvidence],
-) -> int:
+def export_orphan_ged(orphan_records: list[CanonicalResponse], output_path: Path) -> None:
     """
-    For each NEW_DOCUMENT (GED record with no GrandFichier match), append a new row
-    to the correct sheet. Writes:
-    - Document identification fields (cols 0–9, respecting variant layout)
-    - "New" in the MISE À JOUR column
-    - "AJOUT_AUTO_GED" in the SOURCE column if present (PATCH 6)
-
-    Deduplication: one row per unique document_key × indice combination.
-    Sheet routing: matched by LOT code from existing GF rows.
-    Returns count of rows appended.
+    Write GED documents that exist in GED but have no matching GF row to an xlsx.
+    Deduplicates by (NUMERO, INDICE), sorts by EMETTEUR then NUMERO.
+    Saves via /tmp to avoid FUSE write issues.
     """
-    from processing.grandfichier_reader import _detect_variant, _find_observations_col, _read_approbateurs
-    from processing.canonical import normalize_numero, is_same_sas_ref_document
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # V3.1 PATCH 11 POINT 2: Build SAS REF index from gf_rows for pre-check before new row creation
-    # normalized NUMERO → list of GFRow objects that carry SAS REF
-    sas_ref_by_numero: dict[str, list] = {}
-    for _r in gf_rows:
-        if _r.has_sas_ref:
-            _num = normalize_numero(_r.numero)
-            if _num:
-                sas_ref_by_numero.setdefault(_num, []).append(_r)
+    # Deduplicate by (NUMERO, INDICE)
+    seen: set[tuple] = set()
+    unique: list[CanonicalResponse] = []
+    for cr in orphan_records:
+        key = (cr.numero or "", cr.indice or "")
+        if key not in seen:
+            seen.add(key)
+            unique.append(cr)
 
-    # Build lot → sheet_name mapping
-    lot_to_sheet: dict[str, str] = {}
-    for gf_row in gf_rows:
-        if gf_row.lot and gf_row.sheet_name:
-            lot_to_sheet[gf_row.lot.upper()] = gf_row.sheet_name
+    # Sort: EMETTEUR then NUMERO
+    unique.sort(key=lambda r: (r.emetteur or "", r.numero or ""))
 
-    # Deduplicate by (document_key, indice)
-    doc_groups: dict[tuple, list] = defaultdict(list)
-    for cr in unmatched_records:
-        doc_groups[(cr.document_key, cr.indice)].append(cr)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Orphan GED"
 
-    appended = 0
+    headers = ["EMETTEUR", "LOT", "TYPE_DOC", "NUMERO", "INDICE", "TITRE", "DATE", "MISSIONS"]
+    for col, h in enumerate(headers, start=1):
+        ws.cell(row=1, column=col).value = h
 
-    for (doc_key, indice), responses in doc_groups.items():
-        rep = responses[0]
+    for row_idx, cr in enumerate(unique, start=2):
+        ws.cell(row=row_idx, column=1).value = cr.emetteur or ""
+        ws.cell(row=row_idx, column=2).value = cr.lot or ""
+        ws.cell(row=row_idx, column=3).value = cr.type_doc or ""
+        ws.cell(row=row_idx, column=4).value = cr.numero or ""
+        ws.cell(row=row_idx, column=5).value = cr.indice or ""
+        ws.cell(row=row_idx, column=6).value = cr.document_key or ""
+        ws.cell(row=row_idx, column=7).value = cr.response_date or ""
+        ws.cell(row=row_idx, column=8).value = cr.mission or ""
 
-        # Route to sheet by LOT
-        sheet_name = lot_to_sheet.get(rep.lot.upper() if rep.lot else "", "")
-        if not sheet_name:
-            from processing.canonical import normalize_lot
-            lot_norm = normalize_lot(rep.lot)
-            for existing_lot, sname in lot_to_sheet.items():
-                if normalize_lot(existing_lot) == lot_norm:
-                    sheet_name = sname
-                    break
-
-        if not sheet_name or sheet_name not in wb.sheetnames:
-            logger.debug("New document %s: cannot route to sheet (lot='%s') — skipped",
-                         doc_key, rep.lot)
-            continue
-
-        # V3.1 PATCH 11 POINT 2: SAS REF guard — don't create new row if same refused doc
-        ged_numero_norm = normalize_numero(rep.numero)
-        sas_candidates = sas_ref_by_numero.get(ged_numero_norm, [])
-        if sas_candidates:
-            if any(is_same_sas_ref_document(rep, sr) for sr in sas_candidates):
-                logger.debug(
-                    "SAS REF guard: doc %s/%s matches existing SAS REF row — no new row created",
-                    doc_key, indice,
-                )
-                continue  # same refused doc — skip new row creation
-            else:
-                logger.info(
-                    "SAS REF new submittal: doc %s/%s shares NUMERO with SAS REF row "
-                    "but is different doc — new row will be created",
-                    doc_key, indice,
-                )
-
-        ws = wb[sheet_name]
-        _, col_map = _detect_variant(ws)
-        appros = _read_approbateurs(ws, col_map, ws.max_column or 60)
-        obs_col = _find_observations_col(ws, appros, col_map, ws.max_column or 60)
-        status_col = _get_status_col(ws, obs_col)
-
-        # Find SOURCE column for AJOUT_AUTO_GED tag (PATCH 6)
-        source_col = _find_source_col(ws, obs_col, ws.max_column or 60)
-
-        next_row = (ws.max_row or GF_DATA_START_ROW) + 1
-
-        # Write document identification fields
-        ws.cell(row=next_row, column=col_map["document"] + 1).value = doc_key
-        if rep.type_doc:
-            ws.cell(row=next_row, column=col_map["type_doc"] + 1).value = rep.type_doc
-        if rep.lot:
-            ws.cell(row=next_row, column=col_map["lot"] + 1).value = rep.lot
-        if rep.numero:
-            ws.cell(row=next_row, column=col_map["numero"] + 1).value = rep.numero
-        if indice:
-            ws.cell(row=next_row, column=col_map["indice"] + 1).value = indice
-
-        # Write "New" in MISE À JOUR column
-        ws.cell(row=next_row, column=status_col).value = "New"
-
-        # Write "AJOUT_AUTO_GED" in SOURCE column if found (PATCH 6)
-        if source_col:
-            ws.cell(row=next_row, column=source_col).value = "AJOUT_AUTO_GED"
-
-        evidence.append(SourceEvidence(
-            sheet_name=sheet_name,
-            row_number=next_row,
-            column_name="MISE À JOUR",
-            old_value="",
-            new_value="New",
-            source_type="GED",
-            source_file=rep.source_file,
-            source_row_or_page=rep.source_row_or_page,
-            update_reason="New submittal appended from GED — not previously in GrandFichier",
-        ))
-        appended += 1
-
-    logger.info("append_new_documents: %d new rows appended across sheets", appended)
-    return appended
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as _tmp:
+        _tmp_xlsx = _tmp.name
+    wb.save(_tmp_xlsx)
+    shutil.copy2(_tmp_xlsx, str(output_path))
+    os.remove(_tmp_xlsx)
+    logger.info("Orphan GED export written: %s (%d unique docs)", output_path, len(unique))
 
 
 # ---------------------------------------------------------------------------

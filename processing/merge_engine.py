@@ -104,52 +104,41 @@ def _get_field_value(cr: CanonicalResponse, field: str) -> str:
 
 
 def build_deliverables(
-    matched_records: list[CanonicalResponse],
-    gf_rows_by_key: dict[str, "GFRow"],  # document_key → GFRow
+    matched_pairs: list,  # list of (GFRow, list[CanonicalResponse])
+    gf_rows_by_sheet_row: dict,
     source_priority: dict,
     anomaly_logger: AnomalyLogger,
 ) -> list[DeliverableRecord]:
     """
-    Group matched CanonicalResponse records by (gf_sheet + gf_row) to form DeliverableRecords.
-    Apply merge logic: select best response per (document, mission, field).
+    Convert (GFRow, responses) pairs into DeliverableRecords for the writer.
+    Each DeliverableRecord = one GF row + all its GED responses.
 
-    Returns list of DeliverableRecord, one per unique GrandFichier row.
+    Returns list of DeliverableRecord, one per matched GrandFichier row.
     """
-    # Group by (sheet, row)
-    by_gf_row: dict[tuple[str, int], list[CanonicalResponse]] = defaultdict(list)
-    for cr in matched_records:
-        key = (cr.gf_sheet, cr.gf_row)
-        by_gf_row[key].append(cr)
-
+    from processing.models import GFRow
     deliverables: list[DeliverableRecord] = []
+    total_responses = 0
 
-    for (sheet, row_num), responses in by_gf_row.items():
+    for gf_row, responses in matched_pairs:
         if not responses:
             continue
-
-        # Representative record for document metadata
         rep = responses[0]
-
-        # All responses are passed through unchanged.
-        # VISA GLOBAL is NOT computed here — the writer resolves MOEX responses
-        # directly into the VISA GLOBAL column (group lookup via mission_map).
-        # consolidated_status is kept for backwards compatibility but not used for writes.
-
         drec = DeliverableRecord(
-            document_key=rep.document_key,
-            lot=rep.lot,
-            type_doc=rep.type_doc,
-            numero=rep.numero,
-            indice=rep.indice,
-            titre="",   # set by grandfichier_writer from GFRow.titre
-            gf_sheet=sheet,
-            gf_row=row_num,
+            document_key=gf_row.document_key,
+            lot=gf_row.lot,
+            type_doc=gf_row.type_doc,
+            numero=gf_row.numero,
+            indice=gf_row.indice,
+            titre=gf_row.titre,
+            gf_sheet=gf_row.sheet_name,
+            gf_row=gf_row.row_number,
             responses=responses,
             conflicts=[],
-            consolidated_status="",  # not used — writer does group-based resolution
+            consolidated_status="",
         )
         deliverables.append(drec)
+        total_responses += len(responses)
 
     logger.info("Merge engine: %d deliverable records built from %d matched responses",
-                len(deliverables), len(matched_records))
+                len(deliverables), total_responses)
     return deliverables
