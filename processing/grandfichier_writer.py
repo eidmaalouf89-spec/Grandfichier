@@ -24,7 +24,9 @@ from pathlib import Path
 from typing import Optional
 
 import openpyxl
-from openpyxl.styles import Font
+from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.page import PrintPageSetup
 
 from processing.models import DeliverableRecord, CanonicalResponse, SourceEvidence, GFRow, GFApprobateur
 from processing.config import GF_DATA_START_ROW, GF_HEADER_ROW
@@ -32,6 +34,63 @@ from processing.dates import str_to_date, compare_dates
 from processing.anomalies import AnomalyLogger
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# GF standard formatting constants
+# ---------------------------------------------------------------------------
+GF_FONT = Font(name="Arial Narrow", size=10)
+GF_FONT_BOLD = Font(name="Arial Narrow", size=10, bold=True)
+GF_GREY_FILL = PatternFill(patternType="solid", fgColor="FFD9D9D9")
+GF_NO_FILL = PatternFill(fill_type=None)
+
+_STATUS_FILLS: dict = {
+    "VSO": PatternFill(patternType="solid", fgColor="FF92D050"),
+    "FAV": PatternFill(patternType="solid", fgColor="FF92D050"),
+    "VAO": PatternFill(patternType="solid", fgColor="FFFFFF00"),
+    "REF": PatternFill(patternType="solid", fgColor="FFF4B083"),
+    "DEF": PatternFill(patternType="solid", fgColor="FFFF0000"),
+    "SUS": PatternFill(patternType="solid", fgColor="FFFFC000"),
+    "HM":  PatternFill(patternType="solid", fgColor="FFD9D9D9"),
+    "ANN": PatternFill(patternType="solid", fgColor="FFD9D9D9"),
+}
+
+# Approximate character width for auto row-height calculation (Arial Narrow 10pt)
+_OBS_CHARS_PER_LINE = 100  # approximate characters that fit in the OBSERVATIONS column
+_OBS_LINE_HEIGHT_PT = 13   # approximate points per line of text
+
+
+def _get_status_fill(status: str) -> Optional[PatternFill]:
+    """Return the fill for a status code, or None if no fill."""
+    return _STATUS_FILLS.get(str(status).strip().upper())
+
+
+def _write_cell_styled(ws, row: int, col: int, value, font=None) -> None:
+    """Write a value to a cell with the GF standard font."""
+    cell = ws.cell(row=row, column=col)
+    cell.value = value
+    cell.font = font or GF_FONT
+
+
+def _write_date_cell(ws, row: int, col: int, date_str: str) -> None:
+    """Write a date string as a proper datetime object so Excel recognizes it as a date."""
+    from datetime import datetime as dt
+    cell = ws.cell(row=row, column=col)
+    if not date_str:
+        return
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%Y-%m-%d %H:%M:%S"):
+        try:
+            d = dt.strptime(date_str.strip()[:len(fmt.replace('%', 'x').replace('x', '0'))], fmt)
+            cell.value = d
+            cell.font = GF_FONT
+            if not cell.number_format or cell.number_format == "General":
+                cell.number_format = "DD/MM/YYYY"
+            return
+        except (ValueError, TypeError):
+            continue
+    # Fallback: write as string
+    cell.value = date_str
+    cell.font = GF_FONT
 
 
 # ---------------------------------------------------------------------------
@@ -313,7 +372,7 @@ def apply_updates(
                 new_s = best_status.normalized_status
                 old_s = appro.current_statut
                 if should_update(old_s, new_s, new_s) and new_s != old_s:
-                    ws.cell(row=row_num, column=appro.col_statut + 1).value = new_s
+                    _write_cell_styled(ws, row_num, appro.col_statut + 1, new_s)
                     ev = SourceEvidence(
                         sheet_name=sheet_name,
                         row_number=row_num,
@@ -336,7 +395,7 @@ def apply_updates(
                 old_d = appro.current_date
                 if should_update(old_d, best_date.response_date) and _is_newer(best_date.response_date, old_d):
                     new_d_display = _fmt_date(best_date.response_date)
-                    ws.cell(row=row_num, column=appro.col_date + 1).value = new_d_display
+                    _write_date_cell(ws, row_num, appro.col_date + 1, new_d_display)
                     evidence.append(SourceEvidence(
                         sheet_name=sheet_name,
                         row_number=row_num,
@@ -369,7 +428,7 @@ def apply_updates(
                 moex_statut = str(ws.cell(row=row_num, column=moex_appro.col_statut + 1).value or "")
                 old_vg = str(ws.cell(row=row_num, column=visa_col).value or "")
                 if moex_statut and should_update(old_vg, moex_statut, moex_statut, is_visa_global=True) and moex_statut != old_vg:
-                    ws.cell(row=row_num, column=visa_col).value = moex_statut
+                    _write_cell_styled(ws, row_num, visa_col, moex_statut)
                     evidence.append(SourceEvidence(
                         sheet_name=sheet_name,
                         row_number=row_num,
@@ -390,7 +449,7 @@ def apply_updates(
                 date_recept = str(gf_row.date_recept or "")
                 new_dc = _compute_date_contractuelle(date_recept)
                 if new_dc:
-                    ws.cell(row=row_num, column=date_cont_col).value = new_dc
+                    _write_date_cell(ws, row_num, date_cont_col, new_dc)
                     evidence.append(SourceEvidence(
                         sheet_name=sheet_name,
                         row_number=row_num,
@@ -429,16 +488,18 @@ def apply_updates(
             edited_col = obs_col + 1
             # Write MAJ header in row 7 if not already present
             if not ws.cell(row=7, column=edited_col).value:
-                ws.cell(row=7, column=edited_col).value = "MAJ"
-                ws.cell(row=7, column=edited_col).font = Font(bold=True)
+                _write_cell_styled(ws, 7, edited_col, "MAJ", font=GF_FONT_BOLD)
             # Write "Edited" for each updated row
             for row_num in row_set:
-                ws.cell(row=row_num, column=edited_col).value = "Edited"
+                _write_cell_styled(ws, row_num, edited_col, "Edited")
         logger.info(
             "Wrote 'Edited' label for %d rows across %d sheets",
             sum(len(v) for v in edited_rows_per_sheet.values()),
             len(edited_rows_per_sheet),
         )
+
+    # Format and cleanup: row coloring, filters, print setup, trim blank rows
+    _format_and_cleanup(wb, gf_rows_by_sheet_row)
 
     # Save via /tmp to avoid corrupting FUSE state (writing a large xlsx directly
     # to the FUSE-mounted filesystem breaks subsequent open() calls in this process).
@@ -922,7 +983,10 @@ def _append_observations_from_responses(
     new_text = "\n".join(final_entries)
     updated_obs = existing_obs + separator + new_text if existing_obs.strip() else new_text
 
-    ws.cell(row=row_num, column=obs_col).value = updated_obs
+    cell = ws.cell(row=row_num, column=obs_col)
+    cell.value = updated_obs
+    cell.font = GF_FONT
+    cell.alignment = Alignment(wrap_text=True, vertical="top")
 
     evidence.append(SourceEvidence(
         sheet_name=sheet_name,
@@ -935,6 +999,154 @@ def _append_observations_from_responses(
         source_row_or_page="",
         update_reason="Smart OBS update: only new responses added, duplicates skipped",
     ))
+
+
+# ---------------------------------------------------------------------------
+# Post-processing: formatting, print setup, filters
+# ---------------------------------------------------------------------------
+
+def _format_and_cleanup(wb, gf_rows_by_sheet_row: dict) -> None:
+    """
+    Post-processing pass on the entire output workbook:
+    1. Row coloring: ancien → grey, visa global filled → row color, else → white with per-cell status colors
+    2. OBSERVATIONS: auto row height based on content
+    3. AutoFilter on row 9
+    4. Print setup: area, rows to repeat, fit to 1 page wide, landscape
+    5. Trim trailing blank rows
+    """
+    from processing.config import GF_DATA_START_ROW, GF_HEADER_ROW
+
+    for sn in wb.sheetnames:
+        ws = wb[sn]
+        max_col = ws.max_column or 10
+        if (ws.max_row or 0) < GF_DATA_START_ROW:
+            continue
+
+        # --- Detect key columns ---
+        # Find VISA GLOBAL col (1-indexed)
+        visa_col = None
+        for c in range(1, min(max_col + 1, 25)):
+            val = str(ws.cell(row=GF_HEADER_ROW, column=c).value or "").replace('\n', ' ').strip().upper()
+            if "VISA" in val and "GLOBAL" in val:
+                visa_col = c
+                break
+
+        # Find ANCIEN col (1-indexed)
+        ancien_col = None
+        for c in range(1, min(max_col + 1, 20)):
+            val = str(ws.cell(row=GF_HEADER_ROW, column=c).value or "").replace('\n', ' ').strip().upper()
+            if "ANCIEN" in val:
+                ancien_col = c
+                break
+
+        # Find OBSERVATIONS col (1-indexed) — from row 8
+        obs_col = None
+        for c in range(1, max_col + 1):
+            val = str(ws.cell(row=8, column=c).value or "").strip().upper()
+            if val == "OBSERVATIONS":
+                obs_col = c
+                break
+
+        # Find all STATUT columns (1-indexed) — from row 9 sub-headers
+        statut_cols = []
+        for c in range(1, max_col + 1):
+            val = str(ws.cell(row=9, column=c).value or "").strip().upper()
+            if "STAT" in val or val == "STATUT":
+                statut_cols.append(c)
+
+        # --- Find last data row ---
+        last_data_row = GF_DATA_START_ROW - 1
+        for r in range(ws.max_row, GF_DATA_START_ROW - 1, -1):
+            if any(ws.cell(row=r, column=c).value is not None for c in range(1, min(max_col, 10))):
+                last_data_row = r
+                break
+
+        # --- Row coloring + OBSERVATIONS auto height ---
+        for r in range(GF_DATA_START_ROW, last_data_row + 1):
+            # Check if row has data
+            doc_val = ws.cell(row=r, column=1).value
+            if doc_val is None:
+                continue
+
+            # Check ANCIEN flag
+            is_ancien = False
+            if ancien_col:
+                anc_val = ws.cell(row=r, column=ancien_col).value
+                is_ancien = (str(anc_val).strip() == "1") if anc_val is not None else False
+
+            # Check VISA GLOBAL value
+            visa_val = ""
+            if visa_col:
+                visa_val = str(ws.cell(row=r, column=visa_col).value or "").strip().upper()
+
+            # Determine the fill to apply to the row
+            last_col_for_fill = obs_col or max_col  # fill up to OBSERVATIONS col
+
+            if is_ancien:
+                # Rule 1: ANCIEN row → grey out entire row, no status colors
+                for c in range(1, last_col_for_fill + 1):
+                    ws.cell(row=r, column=c).fill = GF_GREY_FILL
+
+            elif visa_val and visa_val not in ("", "EN_ATTENTE", "NONE"):
+                # Rule 2: VISA GLOBAL filled → entire row takes visa color
+                row_fill = _get_status_fill(visa_val)
+                if row_fill:
+                    for c in range(1, last_col_for_fill + 1):
+                        ws.cell(row=r, column=c).fill = row_fill
+
+            else:
+                # Rule 3: No VISA GLOBAL → white row, per-cell STATUT color coding only
+                for sc in statut_cols:
+                    stat_val = str(ws.cell(row=r, column=sc).value or "").strip().upper()
+                    if stat_val:
+                        sfill = _get_status_fill(stat_val)
+                        if sfill:
+                            ws.cell(row=r, column=sc).fill = sfill
+
+            # --- OBSERVATIONS: auto row height ---
+            if obs_col:
+                obs_cell = ws.cell(row=r, column=obs_col)
+                obs_text = str(obs_cell.value or "")
+                obs_cell.alignment = Alignment(wrap_text=True, vertical="top")
+                if obs_text:
+                    # Estimate required height
+                    line_count = obs_text.count('\n') + 1
+                    # Also account for long lines wrapping
+                    for line in obs_text.split('\n'):
+                        if len(line) > _OBS_CHARS_PER_LINE:
+                            line_count += len(line) // _OBS_CHARS_PER_LINE
+                    estimated_height = max(line_count * _OBS_LINE_HEIGHT_PT, 15)
+                    # Only increase height, never shrink below current
+                    current_height = ws.row_dimensions[r].height or 15
+                    if estimated_height > current_height:
+                        ws.row_dimensions[r].height = estimated_height
+
+        # --- AutoFilter on row 9 ---
+        filter_end_col = obs_col or max_col
+        filter_range = f"A9:{get_column_letter(filter_end_col)}9"
+        ws.auto_filter.ref = filter_range
+
+        # --- Print setup ---
+        # Print area: col A to OBSERVATIONS column, row 1 to last data row
+        if obs_col:
+            print_area = f"A1:{get_column_letter(obs_col)}{last_data_row}"
+            ws.print_area = print_area
+
+        # Rows to repeat at top: 1 through 9
+        ws.print_title_rows = "1:9"
+
+        # Fit to 1 page wide, auto height
+        ws.page_setup.fitToWidth = 1
+        ws.page_setup.fitToHeight = 0  # 0 = auto (as many pages as needed vertically)
+        ws.sheet_properties.pageSetUpPr.fitToPage = True
+
+        # Landscape orientation
+        ws.page_setup.orientation = "landscape"
+
+        # --- Trim trailing blank rows ---
+        keep_until = last_data_row + 5
+        if ws.max_row > keep_until:
+            ws.delete_rows(keep_until + 1, ws.max_row - keep_until)
 
 
 # ---------------------------------------------------------------------------
