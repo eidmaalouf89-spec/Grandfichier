@@ -21,7 +21,9 @@ New rows also get "AJOUT_AUTO_GED" in the SOURCE column if present.
 """
 import csv
 import logging
+import os
 import shutil
+import tempfile
 from collections import defaultdict
 from pathlib import Path
 from typing import Optional
@@ -444,7 +446,13 @@ def apply_updates(
         new_appended = append_new_documents(wb, unmatched_records, gf_rows, evidence)
         fields_updated += new_appended
 
-    wb.save(str(output_path))
+    # Save via /tmp to avoid corrupting FUSE state (writing a large xlsx directly
+    # to the FUSE-mounted filesystem breaks subsequent open() calls in this process).
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as _tmp:
+        _tmp_xlsx = _tmp.name
+    wb.save(_tmp_xlsx)
+    shutil.copy2(_tmp_xlsx, str(output_path))
+    os.remove(_tmp_xlsx)
     logger.info(
         "Writer complete: %d fields updated, %d evidence records, saved to %s",
         fields_updated, len(evidence), output_path,
@@ -551,6 +559,16 @@ def append_new_documents(
     Returns count of rows appended.
     """
     from processing.grandfichier_reader import _detect_variant, _find_observations_col, _read_approbateurs
+    from processing.canonical import normalize_numero, is_same_sas_ref_document
+
+    # V3.1 PATCH 11 POINT 2: Build SAS REF index from gf_rows for pre-check before new row creation
+    # normalized NUMERO → list of GFRow objects that carry SAS REF
+    sas_ref_by_numero: dict[str, list] = {}
+    for _r in gf_rows:
+        if _r.has_sas_ref:
+            _num = normalize_numero(_r.numero)
+            if _num:
+                sas_ref_by_numero.setdefault(_num, []).append(_r)
 
     # Build lot → sheet_name mapping
     lot_to_sheet: dict[str, str] = {}
@@ -582,6 +600,23 @@ def append_new_documents(
             logger.debug("New document %s: cannot route to sheet (lot='%s') — skipped",
                          doc_key, rep.lot)
             continue
+
+        # V3.1 PATCH 11 POINT 2: SAS REF guard — don't create new row if same refused doc
+        ged_numero_norm = normalize_numero(rep.numero)
+        sas_candidates = sas_ref_by_numero.get(ged_numero_norm, [])
+        if sas_candidates:
+            if any(is_same_sas_ref_document(rep, sr) for sr in sas_candidates):
+                logger.debug(
+                    "SAS REF guard: doc %s/%s matches existing SAS REF row — no new row created",
+                    doc_key, indice,
+                )
+                continue  # same refused doc — skip new row creation
+            else:
+                logger.info(
+                    "SAS REF new submittal: doc %s/%s shares NUMERO with SAS REF row "
+                    "but is different doc — new row will be created",
+                    doc_key, indice,
+                )
 
         ws = wb[sheet_name]
         _, col_map = _detect_variant(ws)
@@ -634,24 +669,32 @@ def append_new_documents(
 # ---------------------------------------------------------------------------
 
 def export_evidence_csv(evidence: list[SourceEvidence], path: Path) -> None:
-    """Write evidence_export.csv."""
+    """Write evidence_export.csv via temp file to avoid FUSE write issues."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=[
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False,
+                                     encoding="utf-8", newline="") as tmp:
+        tmp_path = tmp.name
+        writer = csv.DictWriter(tmp, fieldnames=[
             "sheet_name", "gf_row", "column_name", "old_value", "new_value",
             "source_type", "source_file", "source_row", "update_reason"
         ])
         writer.writeheader()
         for ev in evidence:
             writer.writerow(ev.to_dict())
+    shutil.copy2(tmp_path, str(path))
+    os.remove(tmp_path)
     logger.info("Evidence export written: %s (%d rows)", path, len(evidence))
 
 
 def export_match_summary_csv(summary_rows: list[dict], path: Path) -> None:
-    """Write match_summary.csv."""
+    """Write match_summary.csv via temp file to avoid FUSE write issues."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["match_level", "count", "percentage"])
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False,
+                                     encoding="utf-8", newline="") as tmp:
+        tmp_path = tmp.name
+        writer = csv.DictWriter(tmp, fieldnames=["match_level", "count", "percentage"])
         writer.writeheader()
         writer.writerows(summary_rows)
+    shutil.copy2(tmp_path, str(path))
+    os.remove(tmp_path)
     logger.info("Match summary written: %s", path)

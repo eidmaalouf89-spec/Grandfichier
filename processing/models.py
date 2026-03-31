@@ -149,6 +149,9 @@ class GFRow:
     visa_global: str          # current VISA GLOBAL value
     observations: str         # current OBSERVATIONS text
     approbateurs: list[GFApprobateur] = field(default_factory=list)
+    # V3.1 PATCH 12 additions
+    has_sas_ref: bool = False  # True if any cell in this row contains a SAS REF pattern
+    date_diffusion: str = ""   # raw date from col 2 (date de diffusion), for SAS REF proximity check
 
 
 @dataclass

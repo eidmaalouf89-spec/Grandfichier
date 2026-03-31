@@ -12,7 +12,7 @@ import logging
 from typing import Optional
 
 from processing.models import CanonicalResponse, GFRow
-from processing.canonical import normalize_numero, normalize_lot
+from processing.canonical import normalize_numero, normalize_lot, is_same_sas_ref_document
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,9 @@ MATCH_NUMERO_LOW    = "NUMERO_LOW_SCORE"
 MATCH_NONE          = "UNMATCHED"
 
 # Field score weights
+# PATCH 10: BEN dual-sheet — sheets prefixed "OLD " are deprioritized
+OLD_SHEET_PREFIX = "OLD "
+
 SCORE_INDICE     = 10
 SCORE_EMETTEUR   = 5
 SCORE_TYPE_DOC   = 3
@@ -145,6 +148,13 @@ class GFNumeroIndex:
             cr.match_strategy = MATCH_NONE
             return None
 
+        # PATCH 10: Prefer NEW sheet over OLD sheet when both contain the same NUMERO
+        # (applies to LOT 31 à 34-IN-BX-CFO-BENTIN vs OLD 31 à 34-IN-BX-CFO-BENTIN)
+        if len(candidates) > 1:
+            non_old = [c for c in candidates if not c.sheet_name.startswith(OLD_SHEET_PREFIX)]
+            if non_old:
+                candidates = non_old  # drop OLD sheet candidates
+
         if len(candidates) == 1:
             best_row = candidates[0]
             best_score = self._score(cr, best_row)
@@ -153,6 +163,20 @@ class GFNumeroIndex:
             scored = [(self._score(cr, row), row) for row in candidates]
             scored.sort(key=lambda x: x[0], reverse=True)
             best_score, best_row = scored[0]
+
+        # PATCH 11: SAS REF disregard check
+        # If the best GF candidate has SAS REF and GED indice matches, check for same document.
+        if best_row.has_sas_ref and cr.indice and cr.indice == best_row.indice:
+            if is_same_sas_ref_document(cr, best_row):
+                # Same refused document — disregard entirely, do NOT update
+                cr.match_strategy = "SAS_REF_DISREGARD"
+                cr.confidence = CONFIDENCE_NONE
+                logger.debug(
+                    "SAS REF disregard: %s indice=%s matches GF sheet=%s row=%d",
+                    cr.document_key, cr.indice, best_row.sheet_name, best_row.row_number,
+                )
+                return None
+            # Different document with same NUMERO → treat as unmatched (new row)
 
         # Assign confidence tier from score
         if best_score >= 15:
@@ -177,10 +201,11 @@ class MatchSummary:
 
     def __init__(self):
         self._counts: dict[str, int] = {
-            MATCH_NUMERO_HIGH:   0,
-            MATCH_NUMERO_MEDIUM: 0,
-            MATCH_NUMERO_LOW:    0,
-            MATCH_NONE:          0,
+            MATCH_NUMERO_HIGH:    0,
+            MATCH_NUMERO_MEDIUM:  0,
+            MATCH_NUMERO_LOW:     0,
+            "SAS_REF_DISREGARD":  0,
+            MATCH_NONE:           0,
         }
 
     def record(self, strategy: str) -> None:
@@ -209,7 +234,8 @@ class MatchSummary:
                 "count": self._counts.get(level, 0),
                 "percentage": f"{100 * self._counts.get(level, 0) / total:.1f}%",
             }
-            for level in [MATCH_NUMERO_HIGH, MATCH_NUMERO_MEDIUM, MATCH_NUMERO_LOW, MATCH_NONE]
+            for level in [MATCH_NUMERO_HIGH, MATCH_NUMERO_MEDIUM, MATCH_NUMERO_LOW,
+                          "SAS_REF_DISREGARD", MATCH_NONE]
         ]
 
     def log_summary(self) -> None:
@@ -239,6 +265,9 @@ def match_all(
             cr.gf_sheet = gf_row.sheet_name
             cr.gf_row = gf_row.row_number
             matched.append(cr)
+        elif cr.match_strategy == "SAS_REF_DISREGARD":
+            # Same document as a SAS REF'd GF row — do NOT add as new doc
+            pass
         else:
             unmatched.append(cr)
         if summary:

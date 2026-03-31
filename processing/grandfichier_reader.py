@@ -16,6 +16,7 @@ from processing.config import (
     GF_COL_VARIANT_A, GF_COL_VARIANT_B,
     GF_APPRO_GROUP_SIZE, GF_OBSERVATIONS_HEADER,
 )
+from processing.canonical import SAS_REF_PATTERN, normalize_numero
 
 logger = logging.getLogger(__name__)
 
@@ -121,13 +122,14 @@ def _find_observations_col(ws, approbateurs: list[GFApprobateur], col_map: dict,
     return None
 
 
-def read_grandfichier(excel_path: str | Path) -> tuple[list[GFRow], dict]:
+def read_grandfichier(excel_path: str | Path) -> tuple[list[GFRow], dict, dict]:
     """
     Read all LOT sheets from a GrandFichier workbook.
 
     Returns:
         - list[GFRow]: all data rows across all sheets
         - dict: metadata per sheet (variant, approbateur names, row counts)
+        - dict: sas_ref_by_numero — normalized NUMERO → list[GFRow] for rows with SAS REF
     """
     excel_path = Path(excel_path)
     logger.info("Loading GrandFichier: %s", excel_path)
@@ -190,6 +192,27 @@ def read_grandfichier(excel_path: str | Path) -> tuple[list[GFRow], dict]:
             if obs_col:
                 observations = _cell_str(ws, row_num, obs_col)
 
+            # Read date_diffusion (col 2, 0-indexed → col 3, 1-indexed)
+            date_diffusion_raw = _cell_val(ws, row_num, col_map["date_diff"] + 1)
+            # Keep as raw value — is_same_sas_ref_document handles datetime or str
+            date_diffusion_str = ""
+            if date_diffusion_raw is not None:
+                try:
+                    if hasattr(date_diffusion_raw, 'isoformat'):
+                        date_diffusion_str = date_diffusion_raw.isoformat()
+                    else:
+                        date_diffusion_str = str(date_diffusion_raw).strip()
+                except Exception:
+                    date_diffusion_str = ""
+
+            # V3.1 PATCH 12: Scan ALL cells in this row for SAS REF pattern
+            has_sas = False
+            for col_scan in range(1, min(max_col + 1, 80)):
+                v = ws.cell(row=row_num, column=col_scan).value
+                if v is not None and SAS_REF_PATTERN.search(str(v)):
+                    has_sas = True
+                    break
+
             # Read current approbateur values
             appro_for_row = []
             for appro in approbateurs:
@@ -221,6 +244,8 @@ def read_grandfichier(excel_path: str | Path) -> tuple[list[GFRow], dict]:
                 visa_global=visa_global,
                 observations=observations,
                 approbateurs=appro_for_row,
+                has_sas_ref=has_sas,
+                date_diffusion=date_diffusion_str,
             )
             all_rows.append(gf_row)
             row_count += 1
@@ -231,8 +256,18 @@ def read_grandfichier(excel_path: str | Path) -> tuple[list[GFRow], dict]:
 
     wb.close()
 
+    # V3.1 PATCH 12: Build SAS REF lookup — normalized NUMERO → list of GFRow with SAS REF
+    sas_ref_by_numero: dict[str, list[GFRow]] = {}
+    sas_ref_count = 0
+    for row in all_rows:
+        if row.has_sas_ref:
+            num = normalize_numero(row.numero)
+            if num:
+                sas_ref_by_numero.setdefault(num, []).append(row)
+                sas_ref_count += 1
+
     logger.info(
-        "GrandFichier read complete: %d total rows across %d sheets",
-        len(all_rows), len(sheet_meta),
+        "GrandFichier read complete: %d total rows across %d sheets, %d rows with SAS REF (%d unique NUMEROs)",
+        len(all_rows), len(sheet_meta), sas_ref_count, len(sas_ref_by_numero),
     )
-    return all_rows, sheet_meta
+    return all_rows, sheet_meta, sas_ref_by_numero

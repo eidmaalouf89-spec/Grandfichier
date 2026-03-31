@@ -59,13 +59,22 @@ def main():
     logger = logging.getLogger("run_update_grandfichier")
 
     # ---- Validate inputs ----
-    ged_path = _check_file(args.ged, "GED dump")
-    gf_path  = _check_file(args.grandfichier, "GrandFichier")
-    output_dir = Path(args.output)
+    ged_path = _check_file(args.ged, "GED dump").resolve()
+    gf_path  = _check_file(args.grandfichier, "GrandFichier").resolve()
+    output_dir = Path(args.output).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    sas_path     = Path(args.sas)     if args.sas     else None
-    reports_path = Path(args.reports) if args.reports else None
+    # Clean output directory before each run so only the latest results remain
+    for _old_file in output_dir.iterdir():
+        if _old_file.is_file():
+            try:
+                _old_file.unlink()
+                logger.info("Cleaned: %s", _old_file.name)
+            except OSError:
+                pass  # FUSE mount may not allow deletion — skip silently
+
+    sas_path     = Path(args.sas).resolve()     if args.sas     else None
+    reports_path = Path(args.reports).resolve() if args.reports else None
 
     logger.info("=" * 60)
     logger.info("JANSA GrandFichier Updater V1")
@@ -173,8 +182,9 @@ def main():
 
     # ---- Step d: Read GrandFichier ----
     logger.info("Step 4/7: Reading GrandFichier...")
-    gf_rows, sheet_meta = read_grandfichier(gf_path)
+    gf_rows, sheet_meta, sas_ref_by_numero = read_grandfichier(gf_path)
     logger.info("  GrandFichier rows: %d across %d sheets", len(gf_rows), len(sheet_meta))
+    logger.info("  SAS REF unique NUMEROs: %d", len(sas_ref_by_numero))
 
     # Build lookup dict for writer
     gf_rows_by_sheet_row = {(r.sheet_name, r.row_number): r for r in gf_rows}
@@ -185,6 +195,12 @@ def main():
     output_evidence_path = output_dir / "evidence_export.csv"
     output_anomaly_path  = output_dir / "anomaly_log.json"
     output_match_path    = output_dir / "match_summary.csv"
+
+    # Pre-create output files so post-apply_updates writes are overwrites (not creates).
+    # On the FUSE-mounted filesystem, creating NEW files after wb.save() fails (ENOENT),
+    # but overwriting EXISTING files works. Touching them here avoids that issue.
+    for _p in (output_evidence_path, output_anomaly_path, output_match_path):
+        _p.touch(exist_ok=True)
 
     gf_index = GFNumeroIndex(gf_rows)
     match_summary = MatchSummary()

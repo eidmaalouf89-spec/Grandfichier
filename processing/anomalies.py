@@ -3,6 +3,9 @@ JANSA GrandFichier Updater — Anomaly logging utilities (V1)
 """
 import json
 import logging
+import os
+import shutil
+import tempfile
 from pathlib import Path
 from processing.models import AnomalyRecord
 
@@ -122,6 +125,50 @@ class AnomalyLogger:
             },
         ))
 
+    def log_sas_ref_disregard(
+        self, source_file: str, source_row: str,
+        document_key: str, numero: str, indice: str, sheet_name: str
+    ) -> None:
+        """
+        GED record matches a SAS REF'd GF row — confirmed same document by
+        indice / name / date proximity → disregarded, no update written.
+        """
+        self.add(AnomalyRecord(
+            anomaly_type="SAS_REF_DISREGARD",
+            severity="DEBUG",
+            source_type="GED",
+            source_file=source_file,
+            source_row_or_page=source_row,
+            document_key=document_key,
+            description=(
+                f"Document ({numero}/{indice}) matches SAS REF'd GF row on sheet '{sheet_name}' "
+                f"— same document confirmed, disregarded"
+            ),
+            raw_data={"numero": numero, "indice": indice, "sheet": sheet_name},
+        ))
+
+    def log_sas_ref_new_submittal(
+        self, source_file: str, source_row: str,
+        document_key: str, numero: str, indice: str, sheet_name: str
+    ) -> None:
+        """
+        GED record shares NUMERO with a SAS REF'd GF row but is a genuinely
+        different document → new row created.
+        """
+        self.add(AnomalyRecord(
+            anomaly_type="SAS_REF_NEW_SUBMITTAL",
+            severity="INFO",
+            source_type="GED",
+            source_file=source_file,
+            source_row_or_page=source_row,
+            document_key=document_key,
+            description=(
+                f"Document ({numero}/{indice}) shares NUMERO with SAS REF'd row on "
+                f"sheet '{sheet_name}' but is a different submittal → new row created"
+            ),
+            raw_data={"numero": numero, "indice": indice, "sheet": sheet_name},
+        ))
+
     def log_status_conflict(
         self, source_type: str, source_file: str, source_row: str,
         document_key: str, field: str, value_a: str, source_a: str,
@@ -183,7 +230,14 @@ class AnomalyLogger:
         return counts
 
     def export_json(self, path: Path) -> None:
+        """Write anomaly log JSON via temp file to avoid FUSE write issues."""
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump([r.to_dict() for r in self._records], f, ensure_ascii=False, indent=2)
+        data = [r.to_dict() for r in self._records]
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", encoding="utf-8", delete=False
+        ) as tmp:
+            tmp_path = tmp.name
+            json.dump(data, tmp, ensure_ascii=False, indent=2)
+        shutil.copy2(tmp_path, str(path))
+        os.remove(tmp_path)
         logger.info("Anomaly log written: %s (%d records)", path, len(self._records))
