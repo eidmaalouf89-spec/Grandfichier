@@ -669,7 +669,7 @@ def append_new_documents(
 # ---------------------------------------------------------------------------
 
 def export_evidence_csv(evidence: list[SourceEvidence], path: Path) -> None:
-    """Write evidence_export.csv via temp file to avoid FUSE write issues."""
+    """Write evidence_export.csv via temp file + shutil.copy2."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False,
                                      encoding="utf-8", newline="") as tmp:
@@ -687,7 +687,7 @@ def export_evidence_csv(evidence: list[SourceEvidence], path: Path) -> None:
 
 
 def export_match_summary_csv(summary_rows: list[dict], path: Path) -> None:
-    """Write match_summary.csv via temp file to avoid FUSE write issues."""
+    """Write match_summary.csv via temp file + shutil.copy2."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False,
                                      encoding="utf-8", newline="") as tmp:

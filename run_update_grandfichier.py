@@ -64,15 +64,6 @@ def main():
     output_dir = Path(args.output).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Clean output directory before each run so only the latest results remain
-    for _old_file in output_dir.iterdir():
-        if _old_file.is_file():
-            try:
-                _old_file.unlink()
-                logger.info("Cleaned: %s", _old_file.name)
-            except OSError:
-                pass  # FUSE mount may not allow deletion — skip silently
-
     sas_path     = Path(args.sas).resolve()     if args.sas     else None
     reports_path = Path(args.reports).resolve() if args.reports else None
 
@@ -191,16 +182,13 @@ def main():
 
     from datetime import datetime as _dt
     _ts = _dt.now().strftime("%Y%m%d_%H%M%S")
-    output_gf_path       = output_dir / f"updated_grandfichier_{_ts}.xlsx"
-    output_evidence_path = output_dir / "evidence_export.csv"
-    output_anomaly_path  = output_dir / "anomaly_log.json"
-    output_match_path    = output_dir / "match_summary.csv"
+    run_dir = output_dir / f"run_{_ts}"
+    run_dir.mkdir(parents=True, exist_ok=True)
 
-    # Pre-create output files so post-apply_updates writes are overwrites (not creates).
-    # On the FUSE-mounted filesystem, creating NEW files after wb.save() fails (ENOENT),
-    # but overwriting EXISTING files works. Touching them here avoids that issue.
-    for _p in (output_evidence_path, output_anomaly_path, output_match_path):
-        _p.touch(exist_ok=True)
+    output_gf_path       = run_dir / "updated_grandfichier.xlsx"
+    output_evidence_path = run_dir / "evidence_export.csv"
+    output_anomaly_path  = run_dir / "anomaly_log.json"
+    output_match_path    = run_dir / "match_summary.csv"
 
     gf_index = GFNumeroIndex(gf_rows)
     match_summary = MatchSummary()

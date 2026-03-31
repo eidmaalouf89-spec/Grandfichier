@@ -230,7 +230,7 @@ class AnomalyLogger:
         return counts
 
     def export_json(self, path: Path) -> None:
-        """Write anomaly log JSON via temp file to avoid FUSE write issues."""
+        """Write anomaly log JSON via temp file + shutil.copy2."""
         path.parent.mkdir(parents=True, exist_ok=True)
         data = [r.to_dict() for r in self._records]
         with tempfile.NamedTemporaryFile(
