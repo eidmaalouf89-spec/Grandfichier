@@ -486,40 +486,69 @@ def _get_col_map(ws, gf_row: GFRow) -> Optional[dict]:
         return None
 
 
-# Patterns that indicate "no real comment — will come from PDF"
-_EMPTY_COMMENT_PATTERNS = [
+# Phrases that indicate "no real comment — placeholder only".
+# These use startswith matching: if the comment begins with one of these phrases, it's a placeholder.
+# Only multi-word phrases go here — never single characters or very short tokens.
+_EMPTY_COMMENT_PREFIX_PATTERNS = [
     "voir documents joints",
     "voir document joint",
     "voir doc joint",
     "voir pièce jointe",
     "voir pièces jointes",
+    "voir pièces joints",
     "voir pj",
     "voir visa",
     "voir note",
     "voir annotation",
-    "ras",
-    "r.a.s",
-    "r.a.s.",
-    "néant",
+    "voir fichier joint",
+    "voir fichier",
     "sans observation",
     "pas d'observation",
     "pas de remarque",
     "aucune observation",
-    "voir fichier joint",
-    "-",
-    ".",
-    "ok",
+    "aucune remarque",
+    "non concerné",
+    "hors mission",
+    "document non visé",
+    "non visé",
 ]
+
+# Exact-match-only patterns: the ENTIRE comment (stripped, lowercased) must equal one of these.
+# Short placeholders that should NOT use startswith (to avoid killing real comments
+# starting with "-", ".", "ok" etc.)
+_EMPTY_COMMENT_EXACT_PATTERNS = {
+    "-", ".", "..", "...", "ok", "ok.", "n/a", "na", "/",
+    "ras", "r.a.s", "r.a.s.", "rsa", "r a s",
+    "néant", "neant",
+    "none", "rien",
+    "sans obs", "sans obs.",
+    "x",
+}
 
 
 def _is_empty_comment(comment: str) -> bool:
-    """Return True if the comment has no real content (placeholder or empty)."""
+    """
+    Return True if the comment has no real content (placeholder or empty).
+
+    Strategy:
+    1. Empty or whitespace-only → empty
+    2. Very short (< 3 chars after stripping) → empty
+    3. Exact match against short placeholder tokens (e.g., "-", "ok", "ras") → empty
+    4. Starts with a known placeholder phrase (e.g., "voir documents joints") → empty
+    5. Everything else → real comment, keep it
+    """
     if not comment:
         return True
     clean = comment.strip().lower()
     if len(clean) < 3:
         return True
-    return any(clean == p or clean.startswith(p) for p in _EMPTY_COMMENT_PATTERNS)
+    # Exact match for short placeholders — the WHOLE comment must be just this token
+    if clean in _EMPTY_COMMENT_EXACT_PATTERNS:
+        return True
+    # Prefix match for multi-word placeholder phrases only
+    if any(clean.startswith(p) for p in _EMPTY_COMMENT_PREFIX_PATTERNS):
+        return True
+    return False
 
 
 def _extract_existing_groups(observations_text: str) -> set:
