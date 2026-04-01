@@ -126,65 +126,148 @@ P17_RE = re.compile(r'P17_T2_\S+')
 STAT_RE = re.compile(r'\b(VSO|VAO|VAOB|REF|HM)\b', re.IGNORECASE)
 
 
-def extract_spatial_luminaires(page, lot: str, section: str, page_num: int, filename: str) -> list[dict]:
+def extract_spatial_luminaires(
+    page,
+    lot: str,
+    section: str,
+    page_num: int,
+    filename: str,
+) -> list[dict]:
     """
-    Bypass extract_tables() for LUMINAIRES_NDC pages.
-    Use word coordinates to match P17 refs to their nearest statut tag.
+    Spatial extraction for CFO LUMINAIRES_NDC pages.
+
+    Strategy:
+    1. Group words into Y bands
+    2. Classify bands as: ref_band (has P17), comment_band (x>920, no P17/avis)
+    3. Find statut for each ref_band (nearest avis within 12px)
+    4. Group ref_bands by NUMERO → find Y range of each NUMERO block
+    5. Collect ALL comment_band text within the Y range of each block
+    6. Emit ONE record per unique (NUMERO, INDICE) — no duplicates
+
+    This handles the case where a comment spans multiple intermediate Y lines
+    between the ref rows of the same block.
     """
     Y_TOL = 3
+    COMMENT_X_MIN = 870  # x position of the "Commentaires" column
+    STAT_DIST_MAX = 12   # max Y distance to match a statut to a ref band
+
+    # Words to skip in the comment column (headers, dates, column labels)
+    SKIP_CMT_WORDS = {
+        'Commentaires', 'Etat', 'visa', 'Localisation', 'Référence',
+        'Em', 'U0', 'UGR', 'page', 'Produit', 'visé', 'lumineuse',
+        '[lm/W]', 'fluo,', 'LED…)', 'type', 'de', 'local)',
+    }
 
     def y_band(y):
         return round(y / Y_TOL) * Y_TOL
 
     words = page.extract_words()
     if not words:
-        logger.warning("Page %d: no text extracted in %s — may be scanned image", page_num, filename)
+        logger.warning("Page %d: no text extracted in %s — may be scanned image",
+                       page_num, filename)
         return []
 
+    # Group words into Y bands
     bands: dict[int, list] = {}
     for w in words:
         bands.setdefault(y_band(w['top']), []).append(w)
 
-    lines = {
-        b: ' '.join(w['text'] for w in sorted(ws, key=lambda w: w['x0']))
-        for b, ws in bands.items()
-    }
+    # Classify each band
+    ref_info: dict[int, tuple] = {}   # b → (refs, statut_or_None, same_band_cmt)
+    comment_bands: dict[int, str] = {}  # b → comment text
 
-    refs_per_band: dict[int, list[str]] = {}
-    statuts_per_band: dict[int, str] = {}
+    for b, ws in bands.items():
+        ws.sort(key=lambda w: w['x0'])
+        full_line = ' '.join(w['text'] for w in ws)
 
-    for b, line in lines.items():
-        refs = P17_RE.findall(line)
+        refs = P17_RE.findall(full_line)
+        stat_m = STAT_RE.search(full_line)
+        statut = stat_m.group(1).upper() if stat_m else None
+
+        cmt_words = [
+            w['text'] for w in ws
+            if w['x0'] > COMMENT_X_MIN
+            and w['text'] not in SKIP_CMT_WORDS
+            and not re.match(r'^\d{2}/\d{2}/\d{4}$', w['text'])
+            and not re.match(r'^\d{2}/\d{2}/\d{2}$', w['text'])
+        ]
+
         if refs:
-            refs_per_band[b] = refs
-        m = STAT_RE.search(line)
-        if m:
-            statuts_per_band[b] = m.group(1).upper()
+            ref_info[b] = (refs, statut, ' '.join(cmt_words) if cmt_words else '')
+        elif cmt_words:
+            # No P17 ref — pure comment line
+            comment_bands[b] = ' '.join(cmt_words)
 
-    records = []
-    for ref_band, refs in sorted(refs_per_band.items()):
-        if not statuts_per_band:
+    # Fill in statut for ref bands that don't have one on the same line
+    all_stat = {b: v[1] for b, v in ref_info.items() if v[1]}
+    for b in list(ref_info.keys()):
+        if ref_info[b][1] is None and all_stat:
+            best = min(all_stat, key=lambda sb: abs(sb - b))
+            if abs(best - b) < STAT_DIST_MAX:
+                ref_info[b] = (ref_info[b][0], all_stat[best], ref_info[b][2])
+
+    # Group ref bands by NUMERO to find Y range of each block
+    num_to_ybands: dict[str, list] = {}
+    for b, (refs, statut, _) in ref_info.items():
+        if not statut:
             continue
-        best_band = min(statuts_per_band, key=lambda sb: abs(sb - ref_band))
-        if abs(best_band - ref_band) >= 12:
-            continue
-        statut_norm = statuts_per_band[best_band]
         for ref in refs:
             ref_clean = ref.rstrip('_')
+            num_m = re.search(r'(\d{5,6})', ref_clean)
+            if num_m:
+                num_to_ybands.setdefault(num_m.group(1), []).append(b)
+
+    # Emit one record per unique (NUMERO, INDICE) — collect comment from Y range
+    records = []
+    seen: set = set()
+
+    for b, (refs, statut, same_band_cmt) in sorted(ref_info.items()):
+        if not statut:
+            continue
+        for ref in refs:
+            ref_clean = ref.rstrip('_')
+            num_m = re.search(r'(\d{5,6})', ref_clean)
+            ind_m = re.search(r'_([A-Z])$', ref_clean)
+            num = num_m.group(1) if num_m else ''
+            ind = ind_m.group(1) if ind_m else ''
+
+            if not num:
+                continue
+
+            # Deduplicate — one record per (NUMERO, INDICE, page)
+            dedup_key = (num, ind, page_num)
+            if dedup_key in seen:
+                continue
+            seen.add(dedup_key)
+
+            # Find Y range of this NUMERO block
+            y_list = num_to_ybands.get(num, [b])
+            y_min, y_max = min(y_list), max(y_list)
+
+            # Collect comment text: same-band comment + all comment_bands in Y range
+            cmt_parts = []
+            if same_band_cmt:
+                cmt_parts.append(same_band_cmt)
+            for cb in sorted(comment_bands.keys()):
+                if y_min - 30 <= cb <= y_max + 30:
+                    cmt_parts.append(comment_bands[cb])
+            commentaire = ' '.join(cmt_parts).strip()[:300]
+
             records.append({
-                'SOURCE': 'LE_SOMMER',
-                'LOT_TYPE': lot,
-                'RAPPORT_ID': Path(filename).stem,
-                'SECTION': section,
-                'TABLE_TYPE': 'LUMINAIRES_NDC',
-                'REF_DOC': ref_clean,
-                'NUMERO': extract_numero(ref_clean),
-                'INDICE': extract_indice_from_ref(ref_clean),
-                'STATUT_NORM': statut_norm,
-                'DATE_VISA': '',
-                'COMMENTAIRE': '',
-                'PDF_PAGE': page_num,
+                'SOURCE':      'LE_SOMMER',
+                'LOT_TYPE':    lot,
+                'RAPPORT_ID':  Path(filename).stem,
+                'SECTION':     section,
+                'TABLE_TYPE':  'LUMINAIRES_NDC',
+                'REF_DOC':     ref_clean,
+                'NUMERO':      num,
+                'INDICE':      ind,
+                'STATUT_NORM': statut,
+                'DATE_VISA':   '',
+                'COMMENTAIRE': commentaire,
+                'PDF_PAGE':    page_num,
             })
+
     return records
 
 
