@@ -323,17 +323,24 @@ def main():
                     "Skipping BET backfill."
                 )
             else:
-                bet_evidence, bet_fields_updated = backfill_bet_reports(
-                    gf_workbook_path=output_gf_path,
-                    gf_rows=gf_rows,
-                    anomaly_logger=anomaly_log,
-                    output_path=output_gf_path,   # overwrite in place
-                )
-                evidence_records.extend(bet_evidence)
-                fields_updated += bet_fields_updated
-                logger.info(
-                    "Step 8: BET backfill complete — %d fields updated", bet_fields_updated
-                )
+                try:
+                    bet_evidence, bet_fields_updated = backfill_bet_reports(
+                        gf_workbook_path=output_gf_path,
+                        gf_rows=gf_rows,
+                        anomaly_logger=anomaly_log,
+                        output_path=output_gf_path,   # overwrite in place
+                    )
+                    evidence_records.extend(bet_evidence)
+                    fields_updated += bet_fields_updated
+                    logger.info(
+                        "Step 8: BET backfill complete — %d fields updated", bet_fields_updated
+                    )
+                except Exception as _step8_exc:
+                    import traceback as _tb
+                    logger.error("Step 8: BET backfill CRASHED — %s", _step8_exc)
+                    logger.error("Step 8 traceback:\n%s", _tb.format_exc())
+                    print(f"ERROR Step 8 BET backfill crashed: {_step8_exc}", flush=True)
+                    print(_tb.format_exc(), flush=True)
     else:
         logger.info("Step 8/7: --bet-reports not provided — skipping BET backfill")
 
