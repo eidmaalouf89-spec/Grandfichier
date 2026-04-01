@@ -182,6 +182,27 @@ AVIS_START_RE = re.compile(
     re.IGNORECASE
 )
 
+OBS_ROW_RE = re.compile(r'Observations', re.IGNORECASE)
+
+
+def find_avis_in_row(row_clean: list) -> tuple[str | None, int]:
+    """
+    Find an avis tag in col0, col1, or col2 (in order).
+    Returns (matched_text, col_index) or (None, -1) if not found.
+
+    AVLS tables have two layouts:
+    - Standard (most files): avis tag is in col0
+    - Extended (some files): col0 is empty or a description,
+      avis tag is in col1 or col2
+
+    Never check beyond col2 to avoid false positives in obs/ref columns.
+    """
+    for col_idx in range(min(3, len(row_clean))):
+        cell = row_clean[col_idx].strip()
+        if cell and AVIS_START_RE.match(cell):
+            return cell, col_idx
+    return None, -1
+
 
 def parse_avis_table(
     table: list,
@@ -191,58 +212,134 @@ def parse_avis_table(
     initial_avis: str | None = None,
 ) -> tuple[list[dict], str | None]:
     """
-    Parse an avis block table.
-    Each block: col0 has avis tag on first row, subsequent rows have ''.
-    Last column (or any column) may contain P17 refs.
+    Parse an AVLS avis block table — TWO-PASS approach, version 5.
 
-    Args:
-        initial_avis: carry-over avis state from the previous table on the
-                      same page (handles blocks that span a table boundary).
-
-    Returns:
-        (records, current_avis) — current_avis is the last active avis tag,
-        which the caller should pass as initial_avis for the next table call.
+    Handles all known AVLS layout variants:
+    - Avis tag in col0, col1, or col2
+    - Observations in col0, col1, or col3 (any position)
+    - Observations on a separate row from the date
+    - Free-text obs label starting with "Observations :"
     """
-    records = []
-    current_avis = initial_avis
+
+    def _is_obs_row(row_clean: list) -> bool:
+        """
+        True if this row is an observation row.
+        Strategy: any cell contains 'Observations' keyword,
+        AND the row has no P17 refs, AND no avis tag.
+        """
+        has_obs  = any(OBS_ROW_RE.search(c) for c in row_clean if c)
+        has_p17  = any(P17_RE.search(c) for c in row_clean if c)
+        has_avis = find_avis_in_row(row_clean)[0] is not None
+        return has_obs and not has_p17 and not has_avis
+
+    def _is_date_only_row(row_clean: list) -> bool:
+        """True if the row contains only a date like '(03/09/2025)'."""
+        joined = ' '.join(row_clean).strip()
+        return bool(re.match(r'^\s*\(\d{2}/\d{2}/\d{4}\)\s*$', joined))
+
+    def _get_obs_text(row_clean: list) -> str:
+        """
+        Extract observation text from an observation row.
+        Scan all cells right-to-left, skip pure label/date cells.
+        """
+        for cell in reversed(row_clean):
+            if not cell:
+                continue
+            stripped = cell.strip()
+            # Skip pure date: "(03/09/2025)"
+            if re.match(r'^\(\d{2}/\d{2}/\d{4}\)$', stripped):
+                continue
+            # Strip "Observations" prefix to check if content remains
+            remainder = OBS_ROW_RE.sub('', stripped).strip().lstrip(':').strip()
+            remainder = re.sub(r'^\(\d{2}/\d{2}/\d{4}\)', '', remainder).strip()
+            if remainder:
+                return stripped  # has real content
+        return ''
+
+    # ── PASS 1: collect blocks ────────────────────────────────────────────
+    blocks = []
+    current_block = None
+
+    if initial_avis:
+        current_block = {'avis': initial_avis, 'refs': [], 'obs': ''}
 
     for row in table:
         row_clean = [str(c).strip() if c else '' for c in row]
 
-        # Check col0 for avis tag
-        col0 = row_clean[0] if row_clean else ''
-        avis_m = AVIS_START_RE.match(col0)
-        if avis_m:
-            raw_avis = avis_m.group(1)
-            current_avis = normalize_avis(raw_avis)
-
-        if current_avis is None:
+        # Skip pure date rows (e.g. "(03/09/2025)" on its own row)
+        if _is_date_only_row(row_clean):
             continue
 
-        # Scan ALL cells in this row for P17 refs
-        for cell_text in row_clean:
-            refs = P17_RE.findall(cell_text)
-            for ref in refs:
-                ref_clean = clean_p17_ref(ref)
-                if not ref_clean:
-                    continue
-                numero = extract_numero(ref_clean)
-                records.append({
-                    'SOURCE': 'AVLS',
-                    'RAPPORT_ID': Path(filename).stem,
-                    'LOT_LABEL': metadata['lot_label'],
-                    'LOT_NUM': metadata['lot_num'],
-                    'N_VISA': metadata['n_visa'],
-                    'INDICE': metadata['indice'],
-                    'DATE_FICHE': metadata['date_fiche'],
-                    'REVIEWER': metadata['reviewer'],
-                    'REF_DOC': ref_clean,
-                    'NUMERO': numero,
-                    'STATUT_NORM': current_avis,
-                    'PDF_PAGE': page_num,
-                })
+        obs_row  = _is_obs_row(row_clean)
+        avis_text, avis_col = find_avis_in_row(row_clean)
 
-    return records, current_avis
+        if avis_text and not obs_row:
+            # New avis block
+            if current_block and current_block['refs']:
+                blocks.append(current_block)
+            current_block = {
+                'avis': normalize_avis(avis_text),
+                'refs': [],
+                'obs':  '',
+            }
+            # Collect refs from this row, skip the avis cell itself
+            for c_idx, cell in enumerate(row_clean):
+                if c_idx == avis_col:
+                    continue
+                for ref in P17_RE.findall(cell):
+                    current_block['refs'].append(clean_p17_ref(ref))
+
+        elif obs_row:
+            # Observation row
+            obs_text = _get_obs_text(row_clean)
+            if obs_text and current_block is not None:
+                if current_block['obs']:
+                    current_block['obs'] += '\n' + obs_text
+                else:
+                    current_block['obs'] = obs_text
+
+        elif current_block is not None:
+            # Continuation row — collect refs
+            for cell in row_clean:
+                for ref in P17_RE.findall(cell):
+                    current_block['refs'].append(clean_p17_ref(ref))
+
+    # Save last block
+    if current_block and current_block['refs']:
+        blocks.append(current_block)
+
+    # ── PASS 2: emit records ──────────────────────────────────────────────
+    records = []
+    last_avis = initial_avis
+
+    for block in blocks:
+        if not block['avis']:
+            continue
+        last_avis = block['avis']
+        commentaire = block['obs'][:300]
+
+        for ref in block['refs']:
+            ref_clean = clean_p17_ref(ref)
+            if not ref_clean:
+                continue
+            numero = extract_numero(ref_clean)
+            records.append({
+                'SOURCE':      'AVLS',
+                'RAPPORT_ID':  Path(filename).stem,
+                'LOT_LABEL':   metadata['lot_label'],
+                'LOT_NUM':     metadata['lot_num'],
+                'N_VISA':      metadata['n_visa'],
+                'INDICE':      metadata['indice'],
+                'DATE_FICHE':  metadata['date_fiche'],
+                'REVIEWER':    metadata['reviewer'],
+                'REF_DOC':     ref_clean,
+                'NUMERO':      numero,
+                'STATUT_NORM': block['avis'],
+                'COMMENTAIRE': commentaire,
+                'PDF_PAGE':    page_num,
+            })
+
+    return records, last_avis
 
 
 # ---------------------------------------------------------------------------
