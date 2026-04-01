@@ -230,6 +230,7 @@ def main() -> int:
 
 if __name__ == '__main__':
     sys.exit(main())
+<<<<<<< HEAD
 
 
 # ---------------------------------------------------------------------------
@@ -328,3 +329,5 @@ def run_bet_ingest_to_workbook(
     ingest_stats['_write_stats'] = write_stats
 
     return ingest_stats
+=======
+>>>>>>> 68ea30c3ba34db9e37ee327968b4bc4ed8daf0e3
