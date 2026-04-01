@@ -185,6 +185,55 @@ def has_blocking_tag(tag_codes: list[str]) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# OLD sheet prefix (shared constant — used by matcher.py and bet_backfill.py)
+# ---------------------------------------------------------------------------
+OLD_SHEET_PREFIX = "OLD "
+
+# ---------------------------------------------------------------------------
+# BET Backfill — Consultant mapping
+# ---------------------------------------------------------------------------
+
+# Maps internal consultant key → list of possible Row 8 approbateur names in GF sheets
+# These names are used to find the right approbateur column in each LOT sheet.
+BET_CONSULTANT_APPRO_NAMES: dict[str, list[str]] = {
+    'lesommer': ['AMO HQE LE SOMMER'],
+    'avls':     ['ACOUSTICIEN AVLS', 'ACOUSTICIEN : AVLS'],
+    'terrell':  ['BET STR-TERRELL', 'STR-TERRELL'],
+    'socotec':  ['BC SOCOTEC', 'SOCOTEC'],
+}
+
+# Terrell is OBS-ONLY: GED already fills his STATUT/DATE/N° columns.
+# The BET pass only appends OBSERVATIONS for Terrell — never writes columns.
+BET_OBS_ONLY_CONSULTANTS: set[str] = {'terrell'}
+
+# Maps consultant key → unified group name (used for _GROUP_DISPLAY_NAMES lookup)
+BET_CONSULTANT_GROUP: dict[str, str] = {
+    'lesommer': 'AMO HQE',
+    'avls':     'BET ACOUSTIQUE',
+    'terrell':  'BET Structure',
+    'socotec':  'Bureau de control',
+}
+
+# Maps consultant key → RAPPORT_* sheet name in the GrandFichier workbook
+BET_CONSULTANT_SHEET: dict[str, str] = {
+    'lesommer': 'RAPPORT_LE_SOMMER',
+    'avls':     'RAPPORT_AVLS',
+    'terrell':  'RAPPORT_TERRELL',
+    'socotec':  'RAPPORT_SOCOTEC',
+}
+
+# Field names in RAPPORT_* sheets for each data type
+# (column headers as written by bet_gf_writer.py)
+BET_FIELD_STATUT      = 'STATUT_NORM'
+BET_FIELD_DATE        = 'DATE_FICHE'    # avls/lesommer/socotec use DATE_FICHE; terrell uses DATE_RECEPT
+BET_FIELD_DATE_ALT    = 'DATE_RECEPT'   # fallback for terrell
+BET_FIELD_RAPPORT_ID  = 'RAPPORT_ID'
+BET_FIELD_COMMENTAIRE = 'COMMENTAIRE'   # avls / lesommer / socotec
+BET_FIELD_OBSERVATIONS = 'OBSERVATIONS' # terrell
+BET_FIELD_NUMERO      = 'NUMERO'
+BET_FIELD_INDICE      = 'INDICE'
+
+# ---------------------------------------------------------------------------
 # Defaults for actor resolution fallback
 # ---------------------------------------------------------------------------
 DEFAULT_ACTOR_FAMILY   = "unknown"

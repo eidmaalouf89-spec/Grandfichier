@@ -51,5 +51,6 @@ node_modules/
 output/
 !output/.gitkeep
 
-# Logs
-*.log
+# Logs (runtime output — not tracked in git)
+logs/
+!logs/.gitkeep

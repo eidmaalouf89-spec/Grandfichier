@@ -52,6 +52,16 @@ def main():
     parser.add_argument("--output",        required=True,  help="Output directory")
     parser.add_argument("--sas",           required=False, help="Path to SAS extract file (optional)")
     parser.add_argument("--reports",       required=False, help="Path to PDF reports folder (optional)")
+    parser.add_argument(
+        "--bet-reports",
+        required=False,
+        help=(
+            "Path to the BET reports root folder. "
+            "Must contain subfolders: 'AMO HQE', 'BET Acoustique AVLS', "
+            "'BET Structure TERRELL', 'socotec'. "
+            "If provided, Step 8 (BET backfill) will run after the GED pass."
+        )
+    )
     parser.add_argument("--loglevel",      default="INFO", help="Logging level (default: INFO)")
     args = parser.parse_args()
 
@@ -67,6 +77,11 @@ def main():
     sas_path     = Path(args.sas).resolve()     if args.sas     else None
     reports_path = Path(args.reports).resolve() if args.reports else None
 
+    bet_reports_path = Path(args.bet_reports).resolve() if args.bet_reports else None
+    if bet_reports_path and not bet_reports_path.is_dir():
+        print(f"ERROR: --bet-reports folder not found: {bet_reports_path}", file=sys.stderr)
+        sys.exit(1)
+
     logger.info("=" * 60)
     logger.info("JANSA GrandFichier Updater V1")
     logger.info("  GED:           %s", ged_path)
@@ -74,6 +89,7 @@ def main():
     logger.info("  Output:        %s", output_dir)
     logger.info("  SAS:           %s", sas_path or "(not provided)")
     logger.info("  Reports:       %s", reports_path or "(not provided)")
+    logger.info("  BET Reports:   %s", bet_reports_path or "(not provided)")
     logger.info("=" * 60)
 
     # ---- Import processing modules ----
@@ -94,6 +110,7 @@ def main():
         apply_updates, export_evidence_csv, export_match_summary_csv,
         export_orphan_ged, export_orphan_summary,
     )
+    from processing.bet_backfill import backfill_bet_reports
 
     # ---- Load config maps ----
     logger.info("Loading config maps...")
@@ -257,6 +274,69 @@ def main():
     else:
         logger.info("Step PDF/7: No PDF records — skipping PDF pass")
 
+    # ---- Step 7c/7: BET PDF ingest (if --bet-reports provided) ----
+    # Parses BET PDF reports and writes them into the RAPPORT_* sheets
+    # of the updated_grandfichier.xlsx produced by Step 7a.
+    if bet_reports_path:
+        logger.info("Step 7c/7: Ingesting BET PDF reports from %s...", bet_reports_path)
+        from run_bet_ingest import run_bet_ingest_to_workbook
+        bet_ingest_stats = run_bet_ingest_to_workbook(
+            reports_root=bet_reports_path,
+            gf_path=output_gf_path,
+        )
+        logger.info("Step 7c/7: BET ingest complete: %s", bet_ingest_stats)
+    else:
+        logger.info("Step 7c/7: --bet-reports not provided — skipping BET ingest")
+
+    # ---- Step 8/7: BET Report Backfill ----
+    # Back-fills BET consultant columns in LOT sheets from the RAPPORT_* sheets.
+    # Prerequisites: Step 7a (GED pass) AND Step 7c (BET ingest) must have run.
+    bet_evidence: list = []
+    bet_fields_updated = 0
+    _rapport_sheets: list = []
+
+    if bet_reports_path:
+        logger.info("Step 8/7: Running BET backfill...")
+
+        # VERIFICATION 1: Check that RAPPORT_* sheets exist in the output workbook
+        import openpyxl as _opxl
+        _wb_check = _opxl.load_workbook(str(output_gf_path), read_only=True)
+        _rapport_sheets = [s for s in _wb_check.sheetnames if s.startswith('RAPPORT_')]
+        _wb_check.close()
+
+        if not _rapport_sheets:
+            logger.error(
+                "Step 8: RAPPORT_* sheets not found in %s — "
+                "BET ingest (Step 7c) may have failed. Skipping BET backfill.",
+                output_gf_path
+            )
+        else:
+            logger.info(
+                "Step 8: Found RAPPORT_* sheets: %s — proceeding with backfill",
+                _rapport_sheets
+            )
+
+            # VERIFICATION 2: Check that gf_rows were loaded (Temps 1 must have run)
+            if not gf_rows:
+                logger.error(
+                    "Step 8: gf_rows is empty — GrandFichier was not read. "
+                    "Skipping BET backfill."
+                )
+            else:
+                bet_evidence, bet_fields_updated = backfill_bet_reports(
+                    gf_workbook_path=output_gf_path,
+                    gf_rows=gf_rows,
+                    anomaly_logger=anomaly_log,
+                    output_path=output_gf_path,   # overwrite in place
+                )
+                evidence_records.extend(bet_evidence)
+                fields_updated += bet_fields_updated
+                logger.info(
+                    "Step 8: BET backfill complete — %d fields updated", bet_fields_updated
+                )
+    else:
+        logger.info("Step 8/7: --bet-reports not provided — skipping BET backfill")
+
     # ---- Write outputs ----
     export_evidence_csv(evidence_records, output_evidence_path)
     anomaly_log.export_json(output_anomaly_path)
@@ -280,6 +360,9 @@ def main():
     print(f"  GF rows skipped (OLD sheet):  {match_summary._counts.get('GF_OLD_SHEET_SKIP', 0):>6}")
     print(f"  Orphan GED documents:         {len(orphan_ged_docs):>6}")
     print(f"  Fields updated:               {fields_updated:>6}")
+    print(f"  BET fields updated (Step 8):  {bet_fields_updated:>6}")
+    if bet_reports_path:
+        print(f"  RAPPORT_* sheets in output:   {len(_rapport_sheets):>6}")
     print(f"  Total anomalies:              {total_anomalies:>6}")
     if anomaly_counts:
         for atype, count in sorted(anomaly_counts.items()):
