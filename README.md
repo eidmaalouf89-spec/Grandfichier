@@ -2,7 +2,7 @@
 
 **Projet :** P17&CO Tranche 2
 **Rôle :** MOEX (Maître d'Œuvre d'Exécution) — Eid Maalouf
-**Statut :** 🟢 Opérationnel — Pipeline GED→GF complet + BET backfill (Step 8) implémenté
+**Statut :** 🟢 Opérationnel — Pipeline GED→GF complet + BET backfill (Step 8) + UI React V2
 
 ---
 
@@ -140,8 +140,16 @@ GRANDFICHIER_UPDATER/
 │   ├── test_status_normalization.py
 │   └── test_terrell_ingest.py
 │
-├── ui/                         # Interface React (Vite, V1.0.3 — basique)
+├── ui/                         # Interface React (Vite, V2.0.0)
 │   ├── src/
+│   │   ├── main.jsx                # Point d'entrée React
+│   │   ├── App.jsx                 # Composant racine — gestion état global
+│   │   ├── index.css               # CSS global (variables CSS natives, pas de framework)
+│   │   └── components/
+│   │       ├── Sidebar.jsx         # Historique des runs de session
+│   │       ├── UploadPanel.jsx     # Upload GED + GF + toggle BET (4 zones PDF)
+│   │       ├── ProgressPanel.jsx   # SSE stream + 8 steps avec statuts
+│   │       └── ResultsPanel.jsx    # Métriques + boutons de téléchargement
 │   ├── index.html
 │   ├── package.json
 │   └── vite.config.js
@@ -267,15 +275,22 @@ python run_update_grandfichier.py --ged "input/ged/NOUVEAU_DUMP.xlsx" --grandfic
 python -m pytest tests/ -v
 ```
 
-### UI (optionnel — basique)
+### UI React V2
 ```bash
-# Terminal 1
+# Terminal 1 — backend API (FastAPI sur port 8000)
 python api_server.py
 
-# Terminal 2
-cd ui && npm install && npm run dev
+# Terminal 2 — frontend Vite (sur port 5173)
+cd ui
+npm install   # seulement la première fois, ou après changement de machine
+npm run dev
+
 # Ouvrir http://localhost:5173
 ```
+
+> **Important :** `npm install` doit être relancé si le dossier `node_modules` a été créé sur
+> une autre plateforme (ex : Linux → Windows). Les binaires natifs de Rollup/Vite ne sont
+> pas portables entre OS.
 
 ---
 
@@ -292,6 +307,94 @@ cd ui && npm install && npm run dev
 
 ---
 
+## Interface React V2
+
+### Architecture
+
+L'UI est une SPA React (Vite) qui communique avec un backend FastAPI via proxy Vite (`/api` → `http://127.0.0.1:8000`). Aucune dépendance CSS externe — tout est en variables CSS natives.
+
+```
+Browser (localhost:5173)
+    │
+    ├─► GET /api/runs            → liste des runs en session (sidebar)
+    ├─► POST /api/run            → démarrage pipeline (upload GED + GF + BET PDFs)
+    ├─► GET /api/stream/{run_id} → SSE stream des logs (progression temps réel)
+    ├─► GET /api/run/{id}/status → statut final + métriques
+    └─► GET /api/run/{id}/download/{grandfichier|debug_zip} → téléchargement
+```
+
+### Composants
+
+**`App.jsx`** — gestion de l'état global : liste des runs (`GET /api/runs`), run actif, panel actif (`upload` / `progress` / `results`). Topbar avec le timestamp du run et le badge mode (GED only / GED + BET). Navigation 3 étapes.
+
+**`Sidebar.jsx`** — liste tous les runs de la session avec statut coloré (en cours / succès / erreur). Bouton "+ Nouveau run" pour réinitialiser vers l'écran d'upload.
+
+**`UploadPanel.jsx`** — deux zones de dépôt (GED xlsx + GF xlsx, requis) + toggle "Inclure la passe BET" qui déploie 4 zones PDF (Le Sommer, AVLS, Terrell, SOCOTEC). Bannière d'avertissement SAS/indices. Le bouton "Lancer le pipeline" est désactivé tant que les 2 fichiers requis ne sont pas sélectionnés.
+
+**`ProgressPanel.jsx`** — se connecte au SSE `/api/stream/{run_id}`. Parse chaque ligne de log pour détecter la step active (détection par mots-clés). Affiche une barre de progression + les 8 steps avec indicateurs visuels (en attente / actif / fait / erreur). Compteur de temps réel.
+
+**`ResultsPanel.jsx`** — après complétion, charge le statut via `/api/run/{id}/status`. Affiche 3 métriques (statut, nombre de logs, mode). Propose le téléchargement du GrandFichier mis à jour et du ZIP de debug. En cas d'erreur, affiche les deux boutons quand même (le GF est souvent produit même si step 8 crash).
+
+### Fonctionnement du backend (api_server.py)
+
+Le serveur FastAPI maintient un registre en mémoire `_runs` (perdu au redémarrage). Chaque run est identifié par un UUID court de 8 caractères.
+
+Au lancement (`POST /api/run`) :
+1. Les fichiers uploadés sont écrits dans un dossier temporaire `tmp/`
+2. Si des PDFs BET sont fournis, les sous-dossiers `AMO HQE/`, `BET Acoustique AVLS/`, etc. sont créés dans `tmp/reports/`
+3. La commande `run_update_grandfichier.py` est lancée en subprocess
+4. Le dossier `tmp/` est conservé (pas nettoyé) pour pouvoir être inclus dans le ZIP de debug
+
+Le pipeline crée son propre sous-dossier `run_{ts}/` à l'intérieur du `--output` passé. Les endpoints de téléchargement recherchent les fichiers récursivement pour gérer cette double imbrication.
+
+---
+
+## Problèmes rencontrés et solutions
+
+### 1. `run_bet_ingest.py` tronqué après un merge conflict
+
+**Problème :** La fonction `run_bet_ingest_to_workbook()` était tronquée à la ligne 322 — les 6 dernières lignes manquaient (reste d'un merge conflict mal résolu). Python levait une `SyntaxError` à l'import, causant le crash silencieux de tous les runs GED+BET. Les fichiers `evidence_export.csv`, `anomaly_log.json` et `match_summary.csv` n'étaient pas générés car le pipeline mourait avant la section "Write outputs".
+
+**Symptôme visible :** Run marqué "Erreur", seuls 3 fichiers produits (`updated_grandfichier.xlsx`, `orphan_ged_documents.xlsx`, `orphan_summary.xlsx`), pas de traceback visible dans l'UI.
+
+**Solution :** Restauration des 6 lignes manquantes depuis `git show cf759a1:run_bet_ingest.py`. Ajout d'un `try/except` autour de l'appel `backfill_bet_reports()` dans `run_update_grandfichier.py` pour que le pipeline continue d'écrire ses outputs même si step 8 crash, et affiche le traceback complet dans le terminal.
+
+---
+
+### 2. Répertoire de sortie doublement imbriqué
+
+**Problème :** `api_server.py` crée `output/run_{ts}/` et le passe comme `--output` au pipeline. Mais `run_update_grandfichier.py` crée lui-même un sous-répertoire `run_{ts}/` à l'intérieur. Les fichiers finaux se retrouvaient donc dans `output/run_20260401_175911/run_20260401_175941/` au lieu de `output/run_20260401_175911/`.
+
+**Symptôme visible :** Bouton "Télécharger GF" retournait 404. Le ZIP ne contenait que les inputs, pas les outputs.
+
+**Solution :** L'endpoint `download_file` utilise maintenant `rglob()` pour trouver `updated_grandfichier.xlsx` récursivement. La construction du ZIP utilise aussi `rglob("*")` au lieu de `iterdir()` pour inclure tous les fichiers imbriqués.
+
+---
+
+### 3. Download bloqué même sur runs en erreur
+
+**Problème :** L'endpoint `GET /api/run/{id}/download/{filename}` vérifiait `run["success"] == True` avant d'autoriser n'importe quel téléchargement. Mais le ZIP de debug est particulièrement utile justement quand le run a échoué.
+
+**Solution :** La guard condition ne vérifie plus que `run["done"]`. Le GF est servi s'il existe sur disque (sans vérification de success). Le `ResultsPanel` affiche maintenant les deux boutons de téléchargement même en cas d'erreur.
+
+---
+
+### 4. `node_modules` Windows/Linux incompatibles
+
+**Problème :** Les binaires natifs de Rollup (utilisé par Vite) ne sont pas portables entre plateformes. Un `node_modules` installé sous Linux ne fonctionne pas sous Windows et vice versa, causant l'erreur `Cannot find module @rollup/rollup-linux-x64-gnu`.
+
+**Solution :** Toujours relancer `npm install` après avoir cloné ou changé de machine. Le `node_modules` ne doit pas être versionné ni transféré entre OS.
+
+---
+
+### 5. Vite inaccessible depuis Chrome sur Windows
+
+**Contexte (environnement de dev uniquement) :** Lors du développement, le serveur Vite tournait dans un container Linux tandis que Chrome était sur Windows. `localhost:5173` sur Windows ne résolvait pas vers le container.
+
+**Solution (dev uniquement) :** Vite relancé avec `--host 0.0.0.0` pour exposer sur le réseau local + `allowedHosts: "all"` dans `vite.config.js` + tunnel localtunnel pour passer la vérification de host. En utilisation normale (Cursor sur Windows), `localhost:5173` fonctionne directement.
+
+---
+
 ## État actuel
 
 ### ✅ Terminé et opérationnel
@@ -305,14 +408,15 @@ cd ui && npm install && npm run dev
 | Logique OBSERVATIONS (append-only + dédup par groupe) | ✅ |
 | **BET Backfill — Step 8** (`bet_backfill.py` + `obs_helpers.py`) | ✅ Implémenté et opérationnel |
 | Tests unitaires pour tous les parsers et modules core | ✅ 9 fichiers de tests |
-| UI React basique (V1.0.3) + API FastAPI | ✅ Fonctionnel |
+| UI React V2 + API FastAPI (BET uploads, download endpoints, /api/runs) | ✅ Fonctionnel |
 
 ### 🟡 Améliorations futures
 
-- **UI améliorée** : la UI actuelle (V1.0.3) affiche les logs mais pas les résultats structurés
-- **Support `--bet-reports` dans l'UI** : `api_server.py` n'expose pas encore ce flag
 - **Tests BET backfill** : `tests/test_bet_backfill.py` à créer (13 cas documentés dans le plan)
+- **Métriques réelles dans ResultsPanel** : afficher les vraies stats du run (champs mis à jour, matchs, orphelins) en parsant `match_summary.csv` côté API plutôt que les métriques approximatives actuelles
+- **Nettoyage des dossiers tmp** : les inputs BET ne sont jamais supprimés actuellement — prévoir un nettoyage après 24h ou après téléchargement du ZIP
 - **SAS** : désactivé volontairement — process manuel côté MOEX, non intégré en V1
+- **Persistance des runs** : le registre `_runs` est en mémoire — perdu au redémarrage de l'API. Une persistance fichier (JSON) permettrait de retrouver l'historique après restart
 
 ---
 
