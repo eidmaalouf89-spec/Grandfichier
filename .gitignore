@@ -38,6 +38,14 @@ input/ged/
 input/grandfichier/
 input/sas/
 input/pdf/
+input/reports/
+
+# Node.js (UI)
+ui/node_modules/
+node_modules/
+
+# Root-level orphan files
+/package-lock.json
 
 # Output files (generated artefacts — not tracked in git)
 output/

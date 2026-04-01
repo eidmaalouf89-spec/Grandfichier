@@ -7,9 +7,10 @@ openpyxl>=3.1.0
 # PDF text extraction (for pdf_ingest.py)
 pdfplumber>=0.10.0
 
+# API server (for React UI)
+fastapi>=0.100.0
+uvicorn>=0.23.0
+python-multipart>=0.0.6
+
 # Testing
 pytest>=7.0.0
-
-# Optional: for CSV handling (stdlib csv is used by default — no extra dep needed)
-# Optional: for richer date parsing
-# python-dateutil>=2.8.0
