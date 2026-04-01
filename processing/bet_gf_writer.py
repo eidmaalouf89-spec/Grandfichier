@@ -71,7 +71,7 @@ FIELD_MAP_COMMON = {
 
 UPSERT_KEYS = {
     'RAPPORT_LE_SOMMER': lambda r: f"{r.get('RAPPORT_ID','')}|{r.get('NUMERO','')}|{r.get('INDICE','')}|{r.get('SECTION','')}|{r.get('TABLE_TYPE','')}",
-    'RAPPORT_AVLS':      lambda r: f"{r.get('RAPPORT_ID','')}|{r.get('NUMERO','')}|{r.get('INDICE','')}|{r.get('LOT_LABEL','')}|{r.get('N_VISA','')}",
+    'RAPPORT_AVLS':      lambda r: f"{r.get('RAPPORT_ID','')}|{r.get('REF_DOC','')}|{r.get('LOT_LABEL','')}|{r.get('N_VISA','')}",
     'RAPPORT_TERRELL':   lambda r: f"{r.get('RAPPORT_ID','')}|{r.get('NUMERO','')}|{r.get('INDICE','')}|{r.get('BAT','')}|{r.get('LOT','')}",
     'RAPPORT_SOCOTEC':   lambda r: f"{r.get('RAPPORT_ID','')}|{r.get('NUMERO','')}|{r.get('STATUT_NORM','')}",
 }

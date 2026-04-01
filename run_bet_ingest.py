@@ -130,6 +130,14 @@ def main() -> int:
         ('socotec',  args.socotec,  ingest_socotec_folder,  'SOCOTEC'),
     ]
 
+    # Per-consultant deduplication key functions (applied in-memory before GF write)
+    DEDUP_KEY_FN = {
+        'lesommer': lambda r: f"{r.get('RAPPORT_ID','')}|{r.get('NUMERO','')}|{r.get('INDICE','')}|{r.get('SECTION','')}|{r.get('TABLE_TYPE','')}",
+        'avls':     lambda r: f"{r.get('RAPPORT_ID','')}|{r.get('REF_DOC','')}|{r.get('LOT_LABEL','')}|{r.get('N_VISA','')}",
+        'terrell':  lambda r: f"{r.get('RAPPORT_ID','')}|{r.get('NUMERO','')}|{r.get('INDICE','')}|{r.get('BAT','')}|{r.get('LOT','')}",
+        'socotec':  lambda r: f"{r.get('RAPPORT_ID','')}|{r.get('NUMERO','')}|{r.get('STATUT_NORM','')}",
+    }
+
     for key, folder, ingest_fn, label in CONSULTANTS:
         if not folder:
             logger.info("Skipping %s (no folder provided)", label)
@@ -148,6 +156,22 @@ def main() -> int:
 
         logger.info("--- Ingesting %s from %s ---", label, folder_path)
         records, skipped = ingest_fn(folder_path)
+
+        # In-memory deduplication by upsert key before writing to GrandFichier
+        seen: set[str] = set()
+        deduped: list[dict] = []
+        for r in records:
+            k = DEDUP_KEY_FN[key](r)
+            if k not in seen:
+                seen.add(k)
+                deduped.append(r)
+        if len(deduped) < len(records):
+            logger.info(
+                "%s: removed %d duplicates (%d → %d unique)",
+                label, len(records) - len(deduped), len(records), len(deduped),
+            )
+        records = deduped
+
         records_by_consultant[key] = records
         all_skipped[key] = skipped
 
