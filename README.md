@@ -395,6 +395,34 @@ Le pipeline crée son propre sous-dossier `run_{ts}/` à l'intérieur du `--outp
 
 ---
 
+### 6. Assets React cassés dans l'EXE (écran blanc au lancement)
+
+**Problème :** Avec `base: './'` dans `vite.config.js`, les assets compilés utilisent des chemins relatifs (ex: `./assets/index.js`). Quand FastAPI sert l'`index.html` depuis la route `/`, le navigateur résout ces chemins comme `/assets/index.js` — ce qui fonctionne. Mais pour toute sous-route (ex: `/run/abc123`), le navigateur résout `./assets/index.js` comme `/run/assets/index.js` → 404. L'app s'affichait comme un écran blanc dès qu'on naviguait ou rechargait une page autre que `/`.
+
+**Symptôme visible :** Page blanche au rechargement. Erreur console `Failed to load resource: 404` sur les fichiers JS/CSS.
+
+**Solution :** `vite.config.js` mis à jour avec `base: "/"` (chemins absolus) et la configuration `server:` rendue conditionnelle au mode `serve` uniquement (le mode `build` n'a pas besoin du proxy). Les assets sont maintenant toujours résolus depuis la racine, quelle que soit la route active.
+
+---
+
+### 7. Pipeline subprocess silencieusement inactif dans l'EXE PyInstaller
+
+**Problème :** Dans un EXE compilé par PyInstaller (mode `onedir`), `sys.executable` ne pointe pas vers `python.exe` mais vers l'EXE lui-même (`JANSA_GrandFichier.exe`). La commande subprocess construite par `api_server.py` était donc :
+```
+JANSA_GrandFichier.exe C:\..._MEIPASS\run_update_grandfichier.py --ged ...
+```
+L'EXE recevait un chemin `.py` comme premier argument, l'ignorait, et démarrait un second serveur uvicorn en arrière-plan. Aucun log, aucun output, run marqué "Erreur" immédiatement. Le problème n'était pas visible en mode dev (`python api_server.py`) car `sys.executable` pointait bien vers Python.
+
+**Symptôme visible :** Tous les steps restaient grisés dans l'onglet Exécution. Run terminé en ~2s avec "Erreur". Aucun fichier produit. Aucune erreur explicite dans les logs.
+
+**Solution — pattern self-dispatch :** `api_server.py` se ré-invoque lui-même avec un flag interne `--_internal-pipeline` pour jouer le rôle de runner du pipeline. Au démarrage de l'EXE, si `sys.argv[1] == "--_internal-pipeline"`, le module `run_update_grandfichier` est importé depuis `sys._MEIPASS` et sa fonction `main()` est appelée directement, puis `sys.exit(0)`. Sinon, le serveur FastAPI démarre normalement. La commande subprocess devient :
+```
+JANSA_GrandFichier.exe --_internal-pipeline --ged ... --grandfichier ... --output ...
+```
+Aucune dépendance à Python sur le PC cible. Entièrement auto-contenu.
+
+---
+
 ## État actuel
 
 ### ✅ Terminé et opérationnel
@@ -443,6 +471,58 @@ Mapping statuts bruts GED → codes normalisés. Ex : `"Visa avec observations"`
 
 ### TAG_PRIORITY (dans config.py)
 Ordre de criticité des statuts : `DEF > REF > SUS > VAO > VSO > FAV > HM > ANN`
+
+---
+
+## Build de l'exécutable Windows (.exe)
+
+### Prérequis
+- Python 3.11+ installé sur Windows
+- Node.js installé (pour le build React)
+- PyInstaller installé : `pip install pyinstaller`
+
+### Étapes
+
+**1. Builder le frontend React**
+```powershell
+cd ui
+npm install
+npm run build
+cd ..
+```
+→ Produit `ui/dist/` avec les fichiers statiques.
+
+**2. Builder l'exécutable**
+```powershell
+pyinstaller JANSA_GF.spec
+```
+→ Produit le dossier `dist/JANSA_GrandFichier/` (~300-400 MB).
+
+> ⚠️ **PowerShell** : lancer chaque commande séparément (pas de `&&`). Pour tout en une ligne : `cd ui; npm install; npm run build; cd ..; pyinstaller JANSA_GF.spec`
+
+**3. Distribuer**
+
+Le build est en mode **onedir** (pas onefile) : c'est le **dossier entier** `dist/JANSA_GrandFichier/` qu'il faut distribuer, pas seulement le `.exe`. Le `.exe` seul ne fonctionne pas sans le dossier `_internal/` à côté.
+
+```
+dist/JANSA_GrandFichier/          ← copier ce dossier entier
+├── JANSA_GrandFichier.exe        ← point d'entrée
+└── _internal/                    ← obligatoire (libs, UI, pipeline)
+```
+
+Sur chaque PC cible :
+1. Copier le dossier `JANSA_GrandFichier/` à l'emplacement souhaité (ex: `C:\JANSA\`)
+2. Double-clic sur `JANSA_GrandFichier.exe`
+3. Une fenêtre console s'ouvre (logs uvicorn) + Chrome s'ouvre sur `http://127.0.0.1:8000`
+4. Le dossier `output/` est créé automatiquement **à côté du `.exe`** au premier run
+
+### Notes
+- Le build doit être fait sur Windows pour produire un exécutable Windows
+- Aucune installation Python ou Node requise sur les PCs cibles
+- La fenêtre console doit rester ouverte pendant l'utilisation (la fermer stoppe le serveur)
+- Port 8000 doit être libre sur le PC cible
+- Au premier lancement, Windows Firewall peut demander d'autoriser le port 8000 → cliquer "Autoriser"
+- Windows Defender peut signaler l'EXE comme suspect (faux positif PyInstaller courant) → ajouter une exclusion si nécessaire
 
 ---
 

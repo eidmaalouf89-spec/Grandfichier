@@ -24,15 +24,49 @@ from typing import List, Optional
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
-BASE_DIR = Path(__file__).parent
+# ── PyInstaller self-dispatch ──────────────────────────────────────────────────
+# When frozen, subprocesses cannot run .py scripts directly (sys.executable is
+# the EXE, not python.exe).  Instead, api_server.py re-invokes ITSELF with a
+# special hidden flag so the same EXE can act as the pipeline runner.
+_PIPELINE_FLAG = "--_internal-pipeline"
+
+if getattr(sys, "frozen", False) and len(sys.argv) > 1 and sys.argv[1] == _PIPELINE_FLAG:
+    # ── Pipeline subprocess mode ──
+    # Strip our flag so the pipeline's argparse sees the real args.
+    sys.argv = [sys.argv[0]] + sys.argv[2:]
+    # _MEIPASS is on sys.path in frozen builds, so this import works.
+    import run_update_grandfichier as _pipeline_mod  # noqa: E402
+    _pipeline_mod.main()
+    sys.exit(0)
+
+# ── PyInstaller compatibility ──────────────────────────────────────────────────
+# When frozen by PyInstaller, __file__ is inside a temp _MEIPASS bundle.
+# BASE_DIR must point to the folder containing the EXE (where output/ lives),
+# not to the bundle temp dir.
+if getattr(sys, "frozen", False):
+    # Running as PyInstaller EXE
+    BASE_DIR = Path(sys.executable).parent
+    _BUNDLE_DIR = Path(sys._MEIPASS)
+    # The pipeline script is extracted to the bundle temp dir
+    _PIPELINE_SCRIPT = _BUNDLE_DIR / "run_update_grandfichier.py"
+    # Python interpreter bundled by PyInstaller
+    _PYTHON_EXE = sys.executable
+else:
+    # Running in normal dev mode
+    BASE_DIR = Path(__file__).parent
+    _BUNDLE_DIR = BASE_DIR
+    _PIPELINE_SCRIPT = BASE_DIR / "run_update_grandfichier.py"
+    _PYTHON_EXE = sys.executable
+
 OUTPUT_DIR = BASE_DIR / "output"
 
 app = FastAPI(title="JANSA GrandFichier Updater API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -104,13 +138,24 @@ async def start_run(
         "mode": "GED + BET" if has_bet else "GED only",
     }
 
-    cmd = [
-        sys.executable,
-        str(BASE_DIR / "run_update_grandfichier.py"),
-        "--ged", str(ged_path),
-        "--grandfichier", str(gf_path),
-        "--output", str(output_run_dir),
-    ]
+    if getattr(sys, "frozen", False):
+        # Frozen EXE: re-invoke self with the internal pipeline flag.
+        cmd = [
+            _PYTHON_EXE,
+            _PIPELINE_FLAG,
+            "--ged", str(ged_path),
+            "--grandfichier", str(gf_path),
+            "--output", str(output_run_dir),
+        ]
+    else:
+        # Dev mode: call the script via python interpreter.
+        cmd = [
+            _PYTHON_EXE,
+            str(_PIPELINE_SCRIPT),
+            "--ged", str(ged_path),
+            "--grandfichier", str(gf_path),
+            "--output", str(output_run_dir),
+        ]
     if bet_reports_dir:
         cmd += ["--bet-reports", str(bet_reports_dir)]
 
@@ -126,7 +171,7 @@ async def _run_pipeline(run_id: str, cmd: list):
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            cwd=str(BASE_DIR),
+            cwd=str(_BUNDLE_DIR),
         )
         async for raw in proc.stdout:
             line = raw.decode("utf-8", errors="replace").rstrip()
@@ -273,5 +318,31 @@ async def list_runs():
 
 
 if __name__ == "__main__":
+    import webbrowser
+    import threading
     import uvicorn
-    uvicorn.run("api_server:app", host="127.0.0.1", port=8000, reload=False)
+
+    # Serve the compiled React frontend (ui/dist/) as static files.
+    # Works both in dev (relative path) and when frozen by PyInstaller (_BUNDLE_DIR).
+    _UI_DIST = _BUNDLE_DIR / "ui" / "dist"
+    if _UI_DIST.exists():
+        # Mount static assets (JS/CSS/icons)
+        app.mount("/assets", StaticFiles(directory=str(_UI_DIST / "assets")), name="assets")
+
+        # SPA catch-all: serve index.html for any non-/api route
+        from fastapi.responses import HTMLResponse
+
+        @app.get("/{full_path:path}", include_in_schema=False)
+        async def spa_fallback(full_path: str):
+            index = _UI_DIST / "index.html"
+            return HTMLResponse(content=index.read_text(encoding="utf-8"))
+
+    # Open browser after a short delay (give uvicorn time to start)
+    def _open_browser():
+        import time
+        time.sleep(1.2)
+        webbrowser.open("http://127.0.0.1:8000")
+
+    threading.Thread(target=_open_browser, daemon=True).start()
+
+    uvicorn.run(app, host="127.0.0.1", port=8000, reload=False)

@@ -39,13 +39,21 @@ input/grandfichier/
 input/sas/
 input/pdf/
 input/reports/
+input/bet_reports/
 
 # Node.js (UI)
 ui/node_modules/
 node_modules/
-
-# Root-level orphan files
+ui/dist/
+ui/.vite/
+ui/package-lock.json
 /package-lock.json
+
+# PyInstaller
+build/
+dist/
+*.spec.bak
+*.manifest
 
 # Output files (generated artefacts — not tracked in git)
 output/
@@ -54,3 +62,13 @@ output/
 # Logs (runtime output — not tracked in git)
 logs/
 !logs/.gitkeep
+*.log
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Temp files created by the app at runtime
+/tmp/
+jansa_ui_*/
