@@ -211,7 +211,7 @@ BET_CONSULTANT_GROUP: dict[str, str] = {
     'lesommer': 'AMO HQE',
     'avls':     'BET ACOUSTIQUE',
     'terrell':  'BET Structure',
-    'socotec':  'Bureau de control',
+    'socotec':  'Bureau de contrôle',
 }
 
 # Maps consultant key → RAPPORT_* sheet name in the GrandFichier workbook
