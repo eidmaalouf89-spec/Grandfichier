@@ -61,6 +61,80 @@ else:
     _PYTHON_EXE = sys.executable
 
 OUTPUT_DIR = BASE_DIR / "output"
+RUNS_DB_PATH = BASE_DIR / "runs.json"
+
+
+def _load_runs_db() -> dict:
+    """Load run registry from disk. Returns empty dict if file missing/corrupt."""
+    try:
+        if RUNS_DB_PATH.exists():
+            with open(RUNS_DB_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+
+def _save_runs_db(runs: dict) -> None:
+    """Persist run registry to disk. Silently ignore write errors."""
+    try:
+        with open(RUNS_DB_PATH, "w", encoding="utf-8") as f:
+            json.dump(runs, f, indent=2, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def _cleanup_old_tmp_dirs(max_age_hours: int = 48) -> None:
+    """
+    Delete tmp directories created by previous runs that are older than max_age_hours.
+    Called once at server startup. Silently ignores errors.
+    """
+    import time
+    cutoff = time.time() - (max_age_hours * 3600)
+    tmp_root = Path(tempfile.gettempdir())
+    deleted = 0
+    try:
+        for d in tmp_root.glob("jansa_ui_*"):
+            if d.is_dir() and d.stat().st_mtime < cutoff:
+                shutil.rmtree(d, ignore_errors=True)
+                deleted += 1
+        if deleted:
+            print(f"[startup] Cleaned up {deleted} old tmp dir(s) older than {max_age_hours}h")
+    except Exception:
+        pass
+
+
+def _read_match_summary(output_run_dir: Path) -> dict:
+    """
+    Read match_summary.csv from the run output directory (recursive search).
+    Returns a dict with keys: gf_matched, gf_no_ged, gf_indice_mismatch, gf_old_skip, total
+    Returns empty dict if file not found or unreadable.
+    """
+    import csv
+    matches = list(output_run_dir.rglob("match_summary.csv"))
+    if not matches:
+        return {}
+    try:
+        counts = {}
+        with open(matches[0], newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                level = row.get("match_level", "").upper()
+                try:
+                    counts[level] = int(row.get("count", 0))
+                except ValueError:
+                    counts[level] = 0
+        total = sum(counts.values())
+        return {
+            "gf_matched": counts.get("GF_MATCHED", 0),
+            "gf_no_ged": counts.get("GF_NO_GED", 0),
+            "gf_indice_mismatch": counts.get("GF_INDICE_MISMATCH", 0),
+            "gf_old_skip": counts.get("GF_OLD_SHEET_SKIP", 0),
+            "total": total,
+        }
+    except Exception:
+        return {}
+
 
 app = FastAPI(title="JANSA GrandFichier Updater API")
 
@@ -71,8 +145,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# In-memory run registry: run_id -> run state dict
-_runs: dict = {}
+# Run registry: loaded from disk at startup, persisted after each update
+_runs: dict = _load_runs_db()
 
 
 @app.post("/api/run")
@@ -159,6 +233,7 @@ async def start_run(
     if bet_reports_dir:
         cmd += ["--bet-reports", str(bet_reports_dir)]
 
+    _save_runs_db(_runs)
     asyncio.create_task(_run_pipeline(run_id, cmd))
     return {"run_id": run_id}
 
@@ -185,6 +260,7 @@ async def _run_pipeline(run_id: str, cmd: list):
         run["success"] = False
     finally:
         run["done"] = True
+        _save_runs_db(_runs)  # persist to disk
         # Note: tmp dir is kept for ZIP download — not cleaned up here
 
 
@@ -234,13 +310,17 @@ async def run_status(run_id: str):
     if run_id not in _runs:
         raise HTTPException(status_code=404, detail="Run not found")
     r = _runs[run_id]
+    stats = {}
+    if r["done"]:
+        stats = _read_match_summary(Path(r["output_run_dir"]))
     return {
         "done": r["done"],
         "success": r["success"],
         "output_dir": r["output_dir"],
-        "log_lines": len(r["logs"]),
+        "log_lines": len(r.get("logs", [])),
         "mode": r.get("mode", "GED only"),
         "has_bet": r.get("has_bet", False),
+        "stats": stats,  # {gf_matched, gf_no_ged, gf_indice_mismatch, gf_old_skip, total}
     }
 
 
@@ -306,6 +386,10 @@ async def list_runs():
     """Retourne la liste de tous les runs pour la sidebar historique."""
     result = []
     for run_id, r in _runs.items():
+        # Only show runs whose output directory still exists on disk
+        odir = Path(r.get("output_run_dir", ""))
+        if not odir.exists():
+            continue
         result.append({
             "run_id": run_id,
             "done": r["done"],
@@ -345,4 +429,5 @@ if __name__ == "__main__":
 
     threading.Thread(target=_open_browser, daemon=True).start()
 
+    _cleanup_old_tmp_dirs(max_age_hours=48)
     uvicorn.run(app, host="127.0.0.1", port=8000, reload=False)

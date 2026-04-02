@@ -10,6 +10,11 @@ from pathlib import Path
 from datetime import date
 
 # ---------------------------------------------------------------------------
+# Pipeline version — bump this with every release
+# ---------------------------------------------------------------------------
+PIPELINE_VERSION = "3.1.0"
+
+# ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
 PROJECT_ROOT         = Path(__file__).resolve().parent.parent
@@ -78,6 +83,10 @@ GED_COL = {
     "pieces_jointes":   32,
     "type_reponse":     33,
     "mission_associee": 34,
+    # NOTE: col 19 (date_depot) is always empty in current AxeoBIM exports.
+    # Col 22 (derniere_modif) holds the actual document deposit timestamp.
+    # If AxeoBIM ever populates col 19, update this constant only.
+    "date_depot_effective": 22,  # override: use derniere_modif as deposit date
 }
 
 # ---------------------------------------------------------------------------

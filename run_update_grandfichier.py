@@ -83,7 +83,7 @@ def main():
         sys.exit(1)
 
     logger.info("=" * 60)
-    logger.info("JANSA GrandFichier Updater V1")
+    logger.info("JANSA GrandFichier Updater V%s", PIPELINE_VERSION)
     logger.info("  GED:           %s", ged_path)
     logger.info("  GrandFichier:  %s", gf_path)
     logger.info("  Output:        %s", output_dir)
@@ -96,6 +96,7 @@ def main():
     # (imports here so errors surface after argument validation)
     from processing.config import (
         ACTOR_MAP_PATH, STATUS_MAP_PATH, MISSION_MAP_PATH, SOURCE_PRIORITY_PATH,
+        PIPELINE_VERSION,
     )
     from processing.statuses import load_status_map
     from processing.actors import load_actor_map, load_mission_map
@@ -174,18 +175,12 @@ def main():
     # ---- Step c: Ingest PDF reports (optional) ----
     pdf_records = []
     if reports_path:
-        logger.info("Step 3/7: Ingesting PDF reports from %s...", reports_path)
-        pdf_records, pdf_skipped = ingest_pdf_folder(reports_path, status_map)
-        logger.info("  PDF records: %d ingested, %d skipped", len(pdf_records), len(pdf_skipped))
-        for skip in pdf_skipped:
-            anomaly_log.log_parse_failure(
-                source_type="REPORT",
-                source_file=skip.get("file", ""),
-                source_row="",
-                document_key="",
-                description=skip.get("reason", "unknown"),
-                raw_data=skip,
-            )
+        logger.warning(
+            "Step 3/7: --reports flag detected but pdf_ingest.py is a PLACEHOLDER — "
+            "no records will be produced. Use --bet-reports for BET PDF ingestion."
+        )
+        pdf_records = []
+        pdf_skipped = []
     else:
         logger.info("Step 3/7: PDF reports folder not provided — skipping")
 

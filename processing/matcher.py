@@ -10,6 +10,7 @@ from typing import Optional
 
 from processing.models import CanonicalResponse, GFRow
 from processing.canonical import normalize_numero, normalize_lot
+from processing.config import OLD_SHEET_PREFIX
 
 logger = logging.getLogger(__name__)
 
@@ -64,9 +65,6 @@ class GEDNumeroIndex:
     def all_numeros(self) -> set[str]:
         """All normalized NUMEROs in the index."""
         return set(self._index.keys())
-
-
-OLD_SHEET_PREFIX = "OLD "
 
 
 class MatchSummary:
@@ -257,6 +255,13 @@ def _score_ged_to_gf(cr: CanonicalResponse, gf_row: GFRow) -> int:
     # Use date_diff (Date diffusion) as the GF reference; fall back to date_recept.
     gf_ref_date = gf_row.date_diff or gf_row.date_recept
     ged_ref_date = cr.response_date
+    # Log when gf_ref_date is non-empty but unparseable — helps detect GF data anomalies
+    if gf_ref_date and _parse_any_date(gf_ref_date) is None:
+        logger.debug(
+            "GF row %s/%s: date_diff/date_recept '%s' is non-empty but unparseable — "
+            "date proximity check skipped (fail-open)",
+            gf_row.sheet_name, gf_row.row_number, gf_ref_date
+        )
     if not _dates_within_range(gf_ref_date, ged_ref_date):
         return 0
 

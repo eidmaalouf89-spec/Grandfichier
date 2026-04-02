@@ -39,6 +39,9 @@ def _source_rank(source_type: str, priority_list: list[str]) -> int:
         return len(priority_list) + 99
 
 
+# NOTE: _pick_best_response and _get_field_value are defined here for reference
+# but are NOT called by build_deliverables(). Source priority resolution happens
+# in grandfichier_writer.py. Kept here for documentation / future use.
 def _pick_best_response(
     responses: list[CanonicalResponse],
     field: str,
@@ -91,6 +94,7 @@ def _pick_best_response(
     return best
 
 
+# NOTE: See comment above _pick_best_response — not called by build_deliverables().
 def _get_field_value(cr: CanonicalResponse, field: str) -> str:
     """Extract the relevant field value from a CanonicalResponse."""
     mapping = {
