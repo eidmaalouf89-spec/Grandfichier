@@ -18,6 +18,8 @@ import logging
 import sys
 from pathlib import Path
 
+from processing.config import PIPELINE_VERSION
+
 
 def _setup_logging(level: str) -> None:
     logging.basicConfig(
@@ -96,7 +98,6 @@ def main():
     # (imports here so errors surface after argument validation)
     from processing.config import (
         ACTOR_MAP_PATH, STATUS_MAP_PATH, MISSION_MAP_PATH, SOURCE_PRIORITY_PATH,
-        PIPELINE_VERSION,
     )
     from processing.statuses import load_status_map
     from processing.actors import load_actor_map, load_mission_map
