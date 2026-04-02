@@ -102,9 +102,7 @@ def ingest_ged(
         numero_raw = _cell(row_cells, GED_COL["numero"])
         indice     = _str(_cell(row_cells, GED_COL["indice"]))
         libelle    = _str(_cell(row_cells, GED_COL["libelle"]))
-        # date_depot (col 19) is empty in current GED exports;
-        # derniere_modif (col 22) holds the actual deposit date/time
-        date_depot = _str(_cell(row_cells, GED_COL["derniere_modif"]))
+        date_depot = _str(_cell(row_cells, GED_COL["date_depot_effective"]))
 
         mission      = _str(_cell(row_cells, GED_COL["mission"]))
         respondant   = _str(_cell(row_cells, GED_COL["respondant"]))

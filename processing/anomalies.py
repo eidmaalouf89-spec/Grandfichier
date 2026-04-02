@@ -160,6 +160,14 @@ class AnomalyLogger:
             raw_data=raw_data or {},
         ))
 
+    def log(self, record: AnomalyRecord) -> None:
+        """
+        Generic log method for AnomalyRecord — used by matcher fuzzy fallback
+        and any caller that constructs AnomalyRecord directly.
+        Delegates to self.add() for consistent severity-based Python logging.
+        """
+        self.add(record)
+
     def log_missing_field(
         self, source_type: str, source_file: str, source_row: str,
         document_key: str, field: str

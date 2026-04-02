@@ -1332,6 +1332,104 @@ def export_evidence_csv(evidence: list[SourceEvidence], path: Path) -> None:
     logger.info("Evidence export written: %s (%d rows)", path, len(evidence))
 
 
+def export_unmatched_gf_rows(unmatched: list[tuple], path: Path) -> None:
+    """
+    Export GF rows that could not be matched to any GED record.
+
+    Args:
+        unmatched: list of (GFRow, category) tuples where category is
+            "GF_NO_GED" or "GF_INDICE_MISMATCH".
+        path: output .xlsx path.
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Unmatched GF Rows"
+
+    HEADERS = [
+        "STATUT",
+        "FEUILLE",
+        "LIGNE",
+        "NUMERO",
+        "INDICE",
+        "TITRE",
+        "LOT",
+        "TYPE DOC",
+        "VISA GLOBAL",
+        "OBSERVATIONS",
+        "DATE RECEPT",
+        "DATE DIFF",
+    ]
+
+    # Header row
+    hdr_font  = Font(name="Arial", bold=True, color="FFFFFF", size=10)
+    no_ged_fill  = PatternFill("solid", start_color="C00000")   # deep red
+    mismatch_fill = PatternFill("solid", start_color="ED7D31")  # orange
+    hdr_fill  = PatternFill("solid", start_color="203864")      # dark blue
+    hdr_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    for col_idx, header in enumerate(HEADERS, 1):
+        cell = ws.cell(row=1, column=col_idx, value=header)
+        cell.font  = hdr_font
+        cell.fill  = hdr_fill
+        cell.alignment = hdr_align
+
+    ws.row_dimensions[1].height = 30
+
+    # Data rows
+    data_font = Font(name="Arial", size=9)
+    wrap_align = Alignment(wrap_text=True, vertical="top")
+
+    for row_idx, (gf_row, category) in enumerate(unmatched, 2):
+        row_fill = no_ged_fill if category == "GF_NO_GED" else mismatch_fill
+        values = [
+            category,
+            gf_row.sheet_name,
+            gf_row.row_number,
+            gf_row.numero or "",
+            gf_row.indice or "",
+            gf_row.titre or "",
+            gf_row.lot or "",
+            gf_row.type_doc or "",
+            gf_row.visa_global or "",
+            gf_row.observations or "",
+            gf_row.date_recept or "",
+            gf_row.date_diff or "",
+        ]
+        for col_idx, val in enumerate(values, 1):
+            cell = ws.cell(row=row_idx, column=col_idx, value=val)
+            cell.font = data_font
+            cell.alignment = wrap_align
+            if col_idx == 1:  # STATUT column gets colour
+                cell.font = Font(name="Arial", size=9, bold=True, color="FFFFFF")
+                cell.fill = row_fill
+
+    # Column widths
+    COL_WIDTHS = [22, 28, 8, 14, 8, 50, 18, 12, 14, 60, 14, 14]
+    for i, w in enumerate(COL_WIDTHS, 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+    # Freeze header
+    ws.freeze_panes = "A2"
+
+    # Auto-filter
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(HEADERS))}1"
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+        tmp_path = tmp.name
+    wb.save(tmp_path)
+    shutil.copy2(tmp_path, str(path))
+    os.remove(tmp_path)
+    logger.info(
+        "Unmatched GF rows exported: %d rows → %s",
+        len(unmatched), path,
+    )
+
+
 def export_match_summary_csv(summary_rows: list[dict], path: Path) -> None:
     """Write match_summary.csv via temp file + shutil.copy2."""
     path.parent.mkdir(parents=True, exist_ok=True)

@@ -14,7 +14,7 @@
 #      pip install pyinstaller
 #      pyinstaller JANSA_GF.spec
 #
-# Output: dist/JANSA_GrandFichier/JANSA_GrandFichier.exe
+# Output: dist1/JANSA_GrandFichier/JANSA_GrandFichier.exe
 #
 # The EXE is a FOLDER distribution (onedir), not a single file (onefile).
 # onefile mode causes slow cold starts (>30s) because it extracts to a temp
@@ -22,8 +22,12 @@
 
 import sys
 from pathlib import Path
+import PyInstaller.config  # noqa: E402
 
 ROOT = Path(SPECPATH)  # noqa: F821  (PyInstaller magic variable)
+
+# Output to dist1/ so we don't conflict with any locked dist/ folder
+PyInstaller.config.CONF['distpath'] = str(ROOT / 'dist1')
 
 block_cipher = None
 

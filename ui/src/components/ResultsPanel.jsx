@@ -32,6 +32,18 @@ export default function ResultsPanel({ runId }) {
         }}>
           Le pipeline s'est terminé avec des erreurs. Le GrandFichier a quand même été produit — téléchargez-le ci-dessous. Le ZIP de debug contient la trace complète.
         </div>
+        {status.stats && status.stats.total > 0 && (
+          <div style={{
+            fontSize: 12,
+            color: 'var(--color-text-secondary)',
+            marginBottom: 12,
+          }}>
+            {(status.stats.gf_matched || 0) + (status.stats.gf_type_doc_override || 0)} document(s) mis à jour avant l'erreur
+            {status.stats.gf_no_ged + status.stats.gf_indice_mismatch > 0 &&
+              ` · ${status.stats.gf_no_ged + status.stats.gf_indice_mismatch} sans correspondance`
+            }
+          </div>
+        )}
         <DownloadRow
           type="grandfichier"
           iconLabel="GF"
@@ -55,30 +67,80 @@ export default function ResultsPanel({ runId }) {
   return (
     <div style={{ maxWidth: 640 }}>
 
-      {/* Métriques */}
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
-        gap: 10,
-        marginBottom: 24,
-      }}>
-        <MetricCard
-          label="Statut"
-          value="Succès"
-          valueColor="var(--color-green)"
-          sub={status.mode}
-        />
-        <MetricCard
-          label="Logs générés"
-          value={status.log_lines}
-          sub="lignes de log"
-        />
-        <MetricCard
-          label="Mode"
-          value={status.has_bet ? 'GED + BET' : 'GED only'}
-          sub="passe exécutée"
-        />
-      </div>
+      {/* Métriques — vraies stats du run */}
+      {status.stats && status.stats.total > 0 && (
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+          gap: 10,
+          marginBottom: 24,
+        }}>
+          <MetricCard
+            label="Documents mis à jour"
+            value={
+              (status.stats.gf_matched || 0) +
+              (status.stats.gf_fuzzy_match || 0) +
+              (status.stats.gf_type_doc_override || 0)
+            }
+            valueColor="var(--color-green)"
+            sub={[
+              (status.stats.gf_fuzzy_match || 0) > 0
+                ? `${status.stats.gf_fuzzy_match} indice approché` : null,
+              (status.stats.gf_type_doc_override || 0) > 0
+                ? `${status.stats.gf_type_doc_override} type doc forcé` : null,
+            ].filter(Boolean).join(' · ') || `sur ${status.stats.total} lignes GF`}
+          />
+          <MetricCard
+            label="Sans correspondance GED"
+            value={(status.stats.gf_no_ged || 0) + (status.stats.gf_indice_mismatch || 0)}
+            valueColor={
+              ((status.stats.gf_no_ged || 0) + (status.stats.gf_indice_mismatch || 0)) > 0
+                ? 'var(--color-amber)'
+                : 'var(--color-text-secondary)'
+            }
+            sub={
+              (status.stats.gf_indice_mismatch || 0) > 0
+                ? `dont ${status.stats.gf_indice_mismatch} indice non récupéré`
+                : 'à vérifier manuellement'
+            }
+          />
+          <MetricCard
+            label="Ignorés (connus)"
+            value={
+              (status.stats.gf_ancien_skip || 0) +
+              (status.stats.gf_sas_ref_skip || 0) +
+              (status.stats.gf_no_moex_yet || 0) +
+              (status.stats.gf_known_skip || 0)
+            }
+            valueColor="var(--color-text-secondary)"
+            sub={[
+              (status.stats.gf_ancien_skip || 0) > 0 ? `${status.stats.gf_ancien_skip} ANCIEN` : null,
+              (status.stats.gf_sas_ref_skip || 0) > 0 ? `${status.stats.gf_sas_ref_skip} SAS REF` : null,
+              (status.stats.gf_no_moex_yet || 0) > 0 ? `${status.stats.gf_no_moex_yet} sans MOEX` : null,
+              (status.stats.gf_known_skip || 0) > 0 ? `${status.stats.gf_known_skip} exception` : null,
+            ].filter(Boolean).join(' · ') || 'aucun ignoré'}
+          />
+          <MetricCard
+            label="Lignes OLD (archivées)"
+            value={status.stats.gf_old_skip}
+            sub="ignorées — normal"
+          />
+        </div>
+      )}
+
+      {/* Fallback si stats non disponibles */}
+      {(!status.stats || status.stats.total === 0) && (
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+          gap: 10,
+          marginBottom: 24,
+        }}>
+          <MetricCard label="Statut" value="Succès" valueColor="var(--color-green)" sub={status.mode} />
+          <MetricCard label="Logs générés" value={status.log_lines} sub="lignes de log" />
+          <MetricCard label="Mode" value={status.has_bet ? 'GED + BET' : 'GED only'} sub="passe exécutée" />
+        </div>
+      )}
 
       <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 10 }}>
         Fichiers à télécharger

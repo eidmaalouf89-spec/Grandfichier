@@ -1,0 +1,15 @@
+{
+  "_comment": "Known GF rows with no recoverable GED reference. NUMEROs here are classified as GF_KNOWN_SKIP instead of GF_NO_GED or GF_INDICE_MISMATCH. Edit this file to add/remove entries. NUMEROs must be normalized (no leading zeros).",
+  "numeros": [
+    "26002",
+    "26003",
+    "26008",
+    "26009",
+    "26011",
+    "26017",
+    "27008",
+    "28004",
+    "126158",
+    "128305"
+  ]
+}

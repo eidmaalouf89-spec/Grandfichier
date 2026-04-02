@@ -10,6 +10,11 @@ from pathlib import Path
 from datetime import date
 
 # ---------------------------------------------------------------------------
+# Pipeline version — bump this with every release
+# ---------------------------------------------------------------------------
+PIPELINE_VERSION = "4.2.0"
+
+# ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
 PROJECT_ROOT         = Path(__file__).resolve().parent.parent
@@ -78,6 +83,10 @@ GED_COL = {
     "pieces_jointes":   32,
     "type_reponse":     33,
     "mission_associee": 34,
+    # NOTE: col 19 (date_depot) is always empty in current AxeoBIM exports.
+    # Col 22 (derniere_modif) holds the actual document deposit timestamp.
+    # If AxeoBIM ever populates col 19, update this constant only.
+    "date_depot_effective": 22,  # override: use derniere_modif as deposit date
 }
 
 # ---------------------------------------------------------------------------
@@ -211,7 +220,7 @@ BET_CONSULTANT_GROUP: dict[str, str] = {
     'lesommer': 'AMO HQE',
     'avls':     'BET ACOUSTIQUE',
     'terrell':  'BET Structure',
-    'socotec':  'Bureau de control',
+    'socotec':  'Bureau de contrôle',
 }
 
 # Maps consultant key → RAPPORT_* sheet name in the GrandFichier workbook
@@ -238,6 +247,23 @@ BET_FIELD_INDICE      = 'INDICE'
 # ---------------------------------------------------------------------------
 DEFAULT_ACTOR_FAMILY   = "unknown"
 DEFAULT_ACTOR_RELEVANT = False
+
+# ---------------------------------------------------------------------------
+# Fuzzy indice-mismatch fallback — scoring thresholds
+# ---------------------------------------------------------------------------
+
+# Minimum total score for a fuzzy fallback match to be accepted.
+# Breakdown: TYPE_DOC(3) + DATE(4) + TITRE(5) + EMETTEUR(3) + LOT(2) + INDICE_ADJ(1) = 18 max.
+# 7.0 requires at minimum DATE_PROXIMITY + EMETTEUR or DATE_PROXIMITY + TITRE(weak).
+FUZZY_MATCH_THRESHOLD: float = 7.0
+
+# Date window (days) for fuzzy date scoring — wider than strict (30d)
+# because re-submissions after SAS REF can happen weeks later.
+FUZZY_DATE_WINDOW_DAYS: int = 90
+
+# Maximum alphabetic indice distance scored for adjacence bonus.
+# A→B=1, A→C=2, A→E=4, A→G=6. Beyond FUZZY_MAX_INDICE_DISTANCE → no bonus.
+FUZZY_MAX_INDICE_DISTANCE: int = 5
 
 # ---------------------------------------------------------------------------
 # Matching confidence levels

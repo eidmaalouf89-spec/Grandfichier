@@ -52,6 +52,7 @@ ui/package-lock.json
 # PyInstaller
 build/
 dist/
+dist1/
 *.spec.bak
 *.manifest
 
@@ -68,6 +69,9 @@ logs/
 .env
 .env.*
 !.env.example
+
+# Runtime database (persisted runs registry — machine-local)
+runs.json
 
 # Temp files created by the app at runtime
 /tmp/

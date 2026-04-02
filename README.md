@@ -2,7 +2,8 @@
 
 **Projet :** P17&CO Tranche 2
 **Rôle :** MOEX (Maître d'Œuvre d'Exécution) — Eid Maalouf
-**Statut :** 🟢 Opérationnel — Pipeline GED→GF complet + BET backfill (Step 8) + UI React V2
+**Version pipeline :** `4.2.0`
+**Statut :** 🟢 Opérationnel — Pipeline GED→GF complet + BET backfill (Step 8) + UI React V2 + matching avancé (Patch 16)
 
 ---
 
@@ -102,7 +103,8 @@ GRANDFICHIER_UPDATER/
 │       ├── updated_grandfichier.xlsx    # GF mis à jour (contient les RAPPORT_* sheets)
 │       ├── evidence_export.csv          # Traçabilité : 1 ligne par champ écrit
 │       ├── anomaly_log.json             # Toutes les anomalies (UNMATCHED, CONFLICT…)
-│       ├── match_summary.csv            # Statistiques de matching
+│       ├── match_summary.csv            # Statistiques de matching (10 niveaux — voir ci-dessous)
+│       ├── unmatched_gf_rows.xlsx       # ⭐ Liste couleur des lignes GF sans correspondance (Patch 15)
 │       ├── orphan_ged_documents.xlsx    # Docs GED sans correspondance GF
 │       └── orphan_summary.xlsx          # Résumé des orphelins
 │
@@ -113,13 +115,14 @@ GRANDFICHIER_UPDATER/
 │   ├── bet_backfill.py         # Step 8 : backfill avis BET → colonnes LOT
 │   ├── bet_gf_writer.py        # Écrit les feuilles RAPPORT_* dans le GF
 │   ├── canonical.py            # Normalisation clés et numéros
-│   ├── config.py               # Constantes, mappings de colonnes, TAG_PRIORITY
+│   ├── config.py               # Constantes, mappings de colonnes, TAG_PRIORITY (v4.2.0)
 │   ├── dates.py                # Parsing et calcul de délais
 │   ├── ged_ingest.py           # Lecture dump GED → CanonicalResponse
 │   ├── grandfichier_reader.py  # Lecture GF → GFRow (master)
-│   ├── grandfichier_writer.py  # Écriture GF depuis DeliverableRecord
+│   ├── grandfichier_writer.py  # Écriture GF + export unmatched_gf_rows.xlsx
+│   ├── known_skip.json         # ⭐ Liste des NUMEROs à ignorer définitivement (Patch 16)
 │   ├── lesommer_ingest.py      # Parser PDF Le Sommer (AMO HQE)
-│   ├── matcher.py              # Moteur de matching GF-master par NUMERO+INDICE
+│   ├── matcher.py              # Moteur de matching GF-master (V4 — Patches 14→16)
 │   ├── merge_engine.py         # Consolidation CanonicalResponse → DeliverableRecord
 │   ├── models.py               # Dataclasses : CanonicalResponse, GFRow, SourceEvidence…
 │   ├── obs_helpers.py          # Helpers OBSERVATIONS partagés (dédup, format, display)
@@ -170,7 +173,7 @@ GRANDFICHIER_UPDATER/
 |---|---|
 | `ged_ingest.py` | Lit le dump AxeoBIM (feuille "Vue détaillée des documents 1"). Produit une `CanonicalResponse` par ligne (document × mission répondant). Filtre les lignes sans mission. |
 | `grandfichier_reader.py` | Lit toutes les feuilles LOT du GrandFichier. Détecte la variante de layout (A: avec Zone, B: sans Zone). Lit les approbateurs depuis la Row 8. Produit une `GFRow` par ligne de données. |
-| `matcher.py` | **GF-master** : pour chaque GFRow, cherche les CanonicalResponse GED correspondantes par NUMERO normalisé + INDICE. Gère les sheets `OLD *` (skip d'écriture, consume les doc IDs pour éviter les faux orphelins). |
+| `matcher.py` | **GF-master V4** : pour chaque GFRow, cherche les CanonicalResponse GED correspondantes par NUMERO normalisé + INDICE. Gère les sheets `OLD *`, les révisions `ANCIEN`, les rejets `SAS REF`, les documents sans réponse MOEX, les overrides TYPE_DOC, et la liste d'exceptions permanentes. Voir détail des niveaux de matching ci-dessous. |
 | `merge_engine.py` | Consolide les CanonicalResponse matchées en `DeliverableRecord`. Applique la priorité source (GED > SAS > REPORT) par champ. Détecte les conflits. |
 | `grandfichier_writer.py` | Applique les mises à jour sur le classeur GF : DATE/N°/STATUT par colonne approbateur, OBSERVATIONS (append-only avec dédup par groupe), VISA GLOBAL (copié depuis la colonne MOEX GEMO). |
 | `bet_gf_writer.py` | Crée/upserte les 4 feuilles RAPPORT_* dans le GF. Logique upsert par UPSERT_KEY — les rapports déjà traités ne sont pas réinsérés lors des runs suivants. |
@@ -221,6 +224,10 @@ Regroupe toutes les CanonicalResponse pour un document GF. Utilisé par le write
 | **GED > BET** | La passe GED prime : si elle a rempli une colonne, la passe BET ne la touche pas |
 | **Terrell OBS-only** | Terrell donne son avis dans la GED. Sa passe BET ne complète que les OBSERVATIONS |
 | **RAPPORT_* history** | Les feuilles RAPPORT_* dans l'output servent d'historique : les rapports déjà traités ne sont pas réinsérés lors des runs suivants (détection par UPSERT_KEY) |
+| **ANCIEN skip** | Les GFRows avec flag `ancien=True` (révisions supersédées) sont silencieusement ignorées — elles ne produisent ni matched ni erreur |
+| **SAS REF skip** | Les documents dont `visa_global` ou `observations` contient un marqueur SAS REF sont ignorés — ils ont été refusés en synthèse SAS et n'auront pas de réponse MOEX |
+| **TYPE_DOC override** | Si NUMERO+INDICE correspondent exactement mais que le TYPE_DOC diffère entre GF et GED, le match est quand même accepté et tracé comme `GF_TYPE_DOC_OVERRIDE` |
+| **Known skip** | `processing/known_skip.json` contient les NUMEROs sans référence GED récupérable — classés `GF_KNOWN_SKIP` au lieu de `GF_NO_GED` pour ne pas polluer le rapport d'erreurs |
 | **Déterminisme** | Mêmes inputs → mêmes outputs, toujours |
 
 ---
@@ -300,10 +307,26 @@ npm run dev
 |---|---|
 | `updated_grandfichier.xlsx` | GrandFichier mis à jour. Contient aussi les feuilles `RAPPORT_*` comme historique interne. |
 | `evidence_export.csv` | Une ligne par champ écrit : sheet, row, colonne, ancienne valeur, nouvelle valeur, source. |
-| `anomaly_log.json` | Toutes les anomalies : documents non matchés, conflits de statut, erreurs de parsing. |
-| `match_summary.csv` | Statistiques de matching : GF_MATCHED / GF_NO_GED / GF_INDICE_MISMATCH / GF_OLD_SHEET_SKIP. |
+| `anomaly_log.json` | Toutes les anomalies : documents non matchés, conflits de statut, erreurs de parsing, TYPE_DOC_OVERRIDE. |
+| `match_summary.csv` | Statistiques de matching — 10 niveaux (voir tableau ci-dessous). |
+| `unmatched_gf_rows.xlsx` | Liste couleur-codée des lignes GF sans correspondance GED : rouge = GF_NO_GED, orange = GF_INDICE_MISMATCH. Produit à chaque run. |
 | `orphan_ged_documents.xlsx` | Documents présents dans la GED mais absents du GrandFichier (non insérés). |
 | `orphan_summary.xlsx` | Résumé agrégé des orphelins par LOT et TYPE_DOC. |
+
+### Niveaux de matching (match_summary.csv)
+
+| Niveau | Signification | Action |
+|---|---|---|
+| `GF_MATCHED` | Correspondance exacte NUMERO + INDICE + TYPE_DOC | ✅ Mis à jour |
+| `GF_FUZZY_MATCH` | Correspondance approchée (indice adjacent, titre similaire) | ✅ Mis à jour |
+| `GF_TYPE_DOC_OVERRIDE` | NUMERO + INDICE exacts mais TYPE_DOC différent GF vs GED | ✅ Mis à jour + anomalie tracée |
+| `GF_NO_GED` | NUMERO absent de la GED MOEX et de la GED complète | ⚠️ Dans `unmatched_gf_rows.xlsx` |
+| `GF_INDICE_MISMATCH` | NUMERO présent dans la GED mais aucun indice récupérable | ⚠️ Dans `unmatched_gf_rows.xlsx` |
+| `GF_OLD_SHEET_SKIP` | Ligne sur une feuille `OLD *` (archivée) | ℹ️ Ignoré — normal |
+| `GF_ANCIEN_SKIP` | GFRow avec flag `ancien=True` (révision supersédée) | ℹ️ Ignoré — normal |
+| `GF_SAS_REF_SKIP` | Document refusé en synthèse SAS (marqueur SAS REF / .REF / REF SAS / SA:REF) | ℹ️ Ignoré — normal |
+| `GF_NO_MOEX_YET` | Document dans la GED complète mais sans réponse MOEX enregistrée | ℹ️ Ignoré — en attente |
+| `GF_KNOWN_SKIP` | NUMERO dans `processing/known_skip.json` (exception permanente) | ℹ️ Ignoré — décision explicite |
 
 ---
 
@@ -432,19 +455,22 @@ Aucune dépendance à Python sur le PC cible. Entièrement auto-contenu.
 | Pipeline GED → GF complet (Steps 1–7) | ✅ Opérationnel |
 | 4 parsers PDF BET (Le Sommer, AVLS, Terrell, SOCOTEC) | ✅ Stable — 171+474+214+508 records |
 | Écriture feuilles RAPPORT_* dans le GF (`bet_gf_writer.py`) | ✅ Avec upsert historique |
-| Moteur de matching GF-master (NUMERO + INDICE) | ✅ |
+| Moteur de matching GF-master V4 — exact + fuzzy | ✅ Patch 14 |
+| Skips ANCIEN / SAS REF / NO_MOEX_YET | ✅ Patch 15 — 90 % de réduction des faux positifs |
+| Export `unmatched_gf_rows.xlsx` couleur-codé | ✅ Patch 15 |
+| TYPE_DOC override + known_skip.json + SAS REF patterns étendus | ✅ Patch 16 |
 | Logique OBSERVATIONS (append-only + dédup par groupe) | ✅ |
 | **BET Backfill — Step 8** (`bet_backfill.py` + `obs_helpers.py`) | ✅ Implémenté et opérationnel |
-| Tests unitaires pour tous les parsers et modules core | ✅ 9 fichiers de tests |
-| UI React V2 + API FastAPI (BET uploads, download endpoints, /api/runs) | ✅ Fonctionnel |
+| Tests unitaires — 49 tests (matchers + parsers + core) | ✅ 9 fichiers de tests |
+| UI React V2 + API FastAPI (métriques réelles, BET uploads, download, /api/runs) | ✅ Fonctionnel |
+| Persistance des runs (runs.json) | ✅ Historique conservé après restart |
 
 ### 🟡 Améliorations futures
 
 - **Tests BET backfill** : `tests/test_bet_backfill.py` à créer (13 cas documentés dans le plan)
-- **Métriques réelles dans ResultsPanel** : afficher les vraies stats du run (champs mis à jour, matchs, orphelins) en parsant `match_summary.csv` côté API plutôt que les métriques approximatives actuelles
-- **Nettoyage des dossiers tmp** : les inputs BET ne sont jamais supprimés actuellement — prévoir un nettoyage après 24h ou après téléchargement du ZIP
+- **Nettoyage des dossiers tmp** : les inputs BET ne sont jamais supprimés — prévoir un nettoyage après 24h ou après téléchargement du ZIP
 - **SAS** : désactivé volontairement — process manuel côté MOEX, non intégré en V1
-- **Persistance des runs** : le registre `_runs` est en mémoire — perdu au redémarrage de l'API. Une persistance fichier (JSON) permettrait de retrouver l'historique après restart
+- **known_skip.json** : enrichir la liste au fil des runs quand de nouveaux NUMEROs sans GED sont confirmés comme définitifs
 
 ---
 
@@ -494,18 +520,20 @@ cd ..
 
 **2. Builder l'exécutable**
 ```powershell
-pyinstaller JANSA_GF.spec
+pyinstaller JANSA_GF.spec --noconfirm
 ```
-→ Produit le dossier `dist/JANSA_GrandFichier/` (~300-400 MB).
+→ Produit le dossier `dist1/JANSA_GrandFichier/` (~300-400 MB).
 
-> ⚠️ **PowerShell** : lancer chaque commande séparément (pas de `&&`). Pour tout en une ligne : `cd ui; npm install; npm run build; cd ..; pyinstaller JANSA_GF.spec`
+> ⚠️ **PowerShell** : lancer chaque commande séparément (pas de `&&`). Pour tout en une ligne : `cd ui; npm install; npm run build; cd ..; pyinstaller JANSA_GF.spec --noconfirm`
+
+> ℹ️ Le spec utilise `dist1/` (et non `dist/`) pour éviter les conflits avec l'ancien dossier de build. Si vous avez besoin de changer le dossier de sortie, modifiez la ligne `PyInstaller.config.CONF['distpath']` dans `JANSA_GF.spec`.
 
 **3. Distribuer**
 
-Le build est en mode **onedir** (pas onefile) : c'est le **dossier entier** `dist/JANSA_GrandFichier/` qu'il faut distribuer, pas seulement le `.exe`. Le `.exe` seul ne fonctionne pas sans le dossier `_internal/` à côté.
+Le build est en mode **onedir** (pas onefile) : c'est le **dossier entier** `dist1/JANSA_GrandFichier/` qu'il faut distribuer, pas seulement le `.exe`. Le `.exe` seul ne fonctionne pas sans le dossier `_internal/` à côté.
 
 ```
-dist/JANSA_GrandFichier/          ← copier ce dossier entier
+dist1/JANSA_GrandFichier/         ← copier ce dossier entier
 ├── JANSA_GrandFichier.exe        ← point d'entrée
 └── _internal/                    ← obligatoire (libs, UI, pipeline)
 ```
@@ -523,6 +551,64 @@ Sur chaque PC cible :
 - Port 8000 doit être libre sur le PC cible
 - Au premier lancement, Windows Firewall peut demander d'autoriser le port 8000 → cliquer "Autoriser"
 - Windows Defender peut signaler l'EXE comme suspect (faux positif PyInstaller courant) → ajouter une exclusion si nécessaire
+
+---
+
+## Historique des patches
+
+### Patch 14 — Moteur de matching V4 + fuzzy fallback (`v4.0.0`)
+
+**Problème :** Le matcher V3 n'avait qu'un seul niveau de matching (clé exacte). Tout document avec une légère divergence d'indice (ex : GF indice B, GED répond toujours sur l'indice A) était classé `GF_INDICE_MISMATCH` même si le document était clairement le même.
+
+**Solution :** Réécriture complète du matcher en V4 avec deux niveaux :
+- **Exact** : NUMERO + INDICE + TYPE_DOC identiques → `GF_MATCHED`
+- **Fuzzy fallback** : si l'exact échoue, scoring multi-critères (TYPE_DOC, date de dépôt, titre, émetteur, LOT, indice adjacent) → `GF_FUZZY_MATCH` si score ≥ 7.0
+
+Nouveau composant `GEDNumeroIndex` : index en mémoire par NUMERO normalisé, remplacement de la boucle O(n²). Nouveau fichier `tests/test_key_matching.py` avec 27 tests couvrant toute la logique de scoring.
+
+---
+
+### Patch 15 — Skips intelligents + export unmatched (`v4.1.0`)
+
+**Contexte :** Après Patch 14, 1 525 lignes GF étaient classées "sans correspondance GED". Analyse manuelle a révélé que la grande majorité n'étaient pas de vraies erreurs mais 3 catégories connues.
+
+**Catégorie 1 — ANCIEN skip :** Les GFRows avec `ancien=True` sont des révisions supersédées par une version plus récente. Elles ne doivent jamais générer d'alerte.
+→ Nouveau niveau `GF_ANCIEN_SKIP` : **2 337 lignes silencieusement ignorées**.
+
+**Catégorie 2 — SAS REF skip :** Les documents refusés en synthèse SAS (`visa_global` ou `observations` contenant `SAS REF`, `.REF`, `.SAS`, `SASREF`…) n'ont pas de réponse MOEX enregistrée. C'est normal.
+→ Nouveau niveau `GF_SAS_REF_SKIP` : **134 lignes ignorées**.
+
+**Catégorie 3 — NO_MOEX_YET :** Le filtre MOEX (Step 1b) ne conserve que les documents avec au moins une réponse de mission MOEX. Certains documents existent dans la GED complète mais MOEX n'a pas encore répondu.
+→ Index `ged_index_all` (pré-filtre) passé en paramètre optionnel à `lookup_ged_for_gf`.
+→ Nouveau niveau `GF_NO_MOEX_YET` : **456 lignes ignorées**.
+
+**Résultat :** Sans correspondance GED réelles : **1 525 → 156** (−90 %).
+
+**Export unmatched :** Nouvelle fonction `export_unmatched_gf_rows()` dans `grandfichier_writer.py`. Produit `unmatched_gf_rows.xlsx` à chaque run : rouge = `GF_NO_GED`, orange = `GF_INDICE_MISMATCH`. Permet l'analyse ciblée des vraies erreurs restantes.
+
+---
+
+### Patch 16 — TYPE_DOC override + known_skip + SAS REF patterns étendus (`v4.2.0`)
+
+**Contexte :** Analyse du fichier `unmatched_gf_rows.xlsx` (156 lignes restantes) via annotations manuelles. Trois nouvelles causes racines identifiées.
+
+**Cause 1 — SAS REF patterns manquants :** Deux variantes non couvertes dans les données réelles :
+- `GEMO : REF SAS` (ordre inversé REF avant SAS)
+- `GEMO SA  : REF` (typo SA au lieu de SAS)
+
+→ Pattern `_SAS_REF_PATTERN` étendu avec `ref\s+sas\b` et `\bsa\s*:\s*ref\b`. Word boundaries empêchent les faux positifs (ex: `CASA:REFONTE`).
+
+**Cause 2 — TYPE_DOC hard filter :** `_fuzzy_score_ged_to_gf` retournait 0 immédiatement si le TYPE_DOC différait entre GF et GED, bloquant même les cas où NUMERO + INDICE correspondaient exactement. Or dans les données réelles, le GF et la GED utilisent parfois des codes TYPE_DOC différents pour le même document.
+
+→ Nouveau fallback `TYPE_DOC_OVERRIDE` : après échec du fuzzy, si un candidat GED a le même NUMERO et le même INDICE exact, le match est accepté malgré la différence de TYPE_DOC. La similitude de titre est calculée et loggée dans `match_strategy` pour audit. Nouveau niveau `GF_TYPE_DOC_OVERRIDE`.
+
+**Cause 3 — Exceptions permanentes :** Certains NUMEROs n'ont définitivement pas de référence GED récupérable (documents hors périmètre MOEX, non encore soumis à la GED…). Les classifier `GF_NO_GED` à chaque run pollue le rapport.
+
+→ Nouveau fichier `processing/known_skip.json` : liste de NUMEROs normalisés. Chargé au démarrage du pipeline, les NUMEROs listés sont classés `GF_KNOWN_SKIP` au lieu de `GF_NO_GED` ou `GF_INDICE_MISMATCH`. La liste est éditable manuellement sans recompiler.
+
+**UI et API :** `ResultsPanel.jsx` intègre `gf_type_doc_override` dans le total "Documents mis à jour" (avec sous-titre "X type doc forcé") et `gf_known_skip` dans "Ignorés (connus)" (avec sous-titre "X exception").
+
+**Tests :** 49 tests total (+11 par rapport à Patch 15). Nouveaux tests : patterns REF SAS inversé, SA:REF compact, faux positif CASA:REFONTE, TYPE_DOC_OVERRIDE exact, TYPE_DOC_OVERRIDE indice mismatch fallthrough, match_strategy loggé, KNOWN_SKIP sans GED, KNOWN_SKIP avec mismatch, KNOWN_SKIP set vide.
 
 ---
 

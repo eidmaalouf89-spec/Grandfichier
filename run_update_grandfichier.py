@@ -18,6 +18,8 @@ import logging
 import sys
 from pathlib import Path
 
+from processing.config import PIPELINE_VERSION
+
 
 def _setup_logging(level: str) -> None:
     logging.basicConfig(
@@ -83,7 +85,7 @@ def main():
         sys.exit(1)
 
     logger.info("=" * 60)
-    logger.info("JANSA GrandFichier Updater V1")
+    logger.info("JANSA GrandFichier Updater V%s", PIPELINE_VERSION)
     logger.info("  GED:           %s", ged_path)
     logger.info("  GrandFichier:  %s", gf_path)
     logger.info("  Output:        %s", output_dir)
@@ -108,7 +110,7 @@ def main():
     from processing.merge_engine import build_deliverables, load_source_priority
     from processing.grandfichier_writer import (
         apply_updates, export_evidence_csv, export_match_summary_csv,
-        export_orphan_ged, export_orphan_summary,
+        export_orphan_ged, export_orphan_summary, export_unmatched_gf_rows,
     )
     from processing.bet_backfill import backfill_bet_reports
 
@@ -118,6 +120,21 @@ def main():
     actor_map       = load_actor_map(ACTOR_MAP_PATH)
     mission_map     = load_mission_map(MISSION_MAP_PATH)
     source_priority = load_source_priority(SOURCE_PRIORITY_PATH)
+
+    # ---- Load known-skip list (user-confirmed no-GED NUMEROs) ----
+    import json as _json
+    from processing.canonical import normalize_numero as _norm_num
+    _known_skip_path = Path(__file__).parent / "processing" / "known_skip.json"
+    known_skip_numeros: set = set()
+    if _known_skip_path.exists():
+        try:
+            _ks = _json.loads(_known_skip_path.read_text(encoding="utf-8"))
+            known_skip_numeros = {_norm_num(str(n)) for n in _ks.get("numeros", []) if n}
+            logger.info("Known-skip list loaded: %d NUMEROs", len(known_skip_numeros))
+        except Exception as _e:
+            logger.warning("Could not load known_skip.json: %s", _e)
+    else:
+        logger.info("known_skip.json not found — skipping")
 
     anomaly_log = AnomalyLogger()
 
@@ -161,6 +178,11 @@ def main():
         len(ged_records_skipped), len(_logged_not_moex),
     )
 
+    # Keep a combined pre-filter list for GF_NO_MOEX_YET detection (Patch 15).
+    # Any GF row whose NUMERO is found here but NOT in ged_records (MOEX-only)
+    # gets classified as GF_NO_MOEX_YET instead of GF_NO_GED.
+    ged_records_all_before_filter = ged_records + ged_records_skipped
+
     # ---- Step b: SAS (disabled — manual process) ----
     sas_records = []
     if sas_path:
@@ -174,18 +196,12 @@ def main():
     # ---- Step c: Ingest PDF reports (optional) ----
     pdf_records = []
     if reports_path:
-        logger.info("Step 3/7: Ingesting PDF reports from %s...", reports_path)
-        pdf_records, pdf_skipped = ingest_pdf_folder(reports_path, status_map)
-        logger.info("  PDF records: %d ingested, %d skipped", len(pdf_records), len(pdf_skipped))
-        for skip in pdf_skipped:
-            anomaly_log.log_parse_failure(
-                source_type="REPORT",
-                source_file=skip.get("file", ""),
-                source_row="",
-                document_key="",
-                description=skip.get("reason", "unknown"),
-                raw_data=skip,
-            )
+        logger.warning(
+            "Step 3/7: --reports flag detected but pdf_ingest.py is a PLACEHOLDER — "
+            "no records will be produced. Use --bet-reports for BET PDF ingestion."
+        )
+        pdf_records = []
+        pdf_skipped = []
     else:
         logger.info("Step 3/7: PDF reports folder not provided — skipping")
 
@@ -208,10 +224,13 @@ def main():
     output_match_path    = run_dir / "match_summary.csv"
     orphan_path          = run_dir / "orphan_ged_documents.xlsx"
     orphan_summary_path  = run_dir / "orphan_summary.xlsx"
+    unmatched_path       = run_dir / "unmatched_gf_rows.xlsx"
 
     # ---- Step 5/7: Index GED records by NUMERO ----
     logger.info("Step 5/7: Indexing GED records by NUMERO...")
     ged_index = GEDNumeroIndex(ged_records)
+    # Secondary full index (pre-MOEX filter) for GF_NO_MOEX_YET classification
+    ged_index_all = GEDNumeroIndex(ged_records_all_before_filter)
 
     # ---- Step 6/7: For each GF row, find matching GED responses ----
     logger.info("Step 6/7: Looking up GED responses for each GF row...")
@@ -221,6 +240,8 @@ def main():
         ged_index=ged_index,
         match_summary=match_summary,
         anomaly_logger=anomaly_log,
+        ged_index_all=ged_index_all,
+        known_skip_numeros=known_skip_numeros,
     )
     match_summary.log_summary()
 
@@ -348,6 +369,7 @@ def main():
     export_evidence_csv(evidence_records, output_evidence_path)
     anomaly_log.export_json(output_anomaly_path)
     export_match_summary_csv(match_summary.to_rows(), output_match_path)
+    export_unmatched_gf_rows(unmatched_gf_rows, unmatched_path)
 
     # ---- Print summary ----
     anomaly_counts = anomaly_log.counts_by_type()
@@ -362,9 +384,16 @@ def main():
     print(f"  SAS records ingested:         {len(sas_records):>6}")
     print(f"  PDF records ingested:         {len(pdf_records):>6}")
     print(f"  GrandFichier rows (master):   {len(gf_rows):>6}")
-    print(f"  GF rows matched to GED:       {match_summary.total_matched:>6}")
-    print(f"  GF rows with no GED data:     {match_summary.total_unmatched:>6}")
+    print(f"  GF rows matched (exact):      {match_summary._counts.get('GF_MATCHED', 0):>6}")
+    print(f"  GF rows matched (fuzzy):      {match_summary._counts.get('GF_FUZZY_MATCH', 0):>6}  (INDICE recovered)")
+    print(f"  GF rows matched (type_doc):   {match_summary._counts.get('GF_TYPE_DOC_OVERRIDE', 0):>6}  (TYPE_DOC mismatch accepted)")
+    print(f"  GF rows — true NO GED:        {match_summary._counts.get('GF_NO_GED', 0):>6}  (to investigate)")
+    print(f"  GF rows — indice mismatch:    {match_summary._counts.get('GF_INDICE_MISMATCH', 0):>6}  (unfuzzy-able)")
     print(f"  GF rows skipped (OLD sheet):  {match_summary._counts.get('GF_OLD_SHEET_SKIP', 0):>6}")
+    print(f"  GF rows skipped (ANCIEN):     {match_summary._counts.get('GF_ANCIEN_SKIP', 0):>6}  (superseded revisions)")
+    print(f"  GF rows skipped (SAS REF):    {match_summary._counts.get('GF_SAS_REF_SKIP', 0):>6}  (rejected, awaiting resubmission)")
+    print(f"  GF rows (no MOEX yet):        {match_summary._counts.get('GF_NO_MOEX_YET', 0):>6}  (in GED, MOEX not assigned)")
+    print(f"  GF rows skipped (known):      {match_summary._counts.get('GF_KNOWN_SKIP', 0):>6}  (user-confirmed no GED ref)")
     print(f"  Orphan GED documents:         {len(orphan_ged_docs):>6}")
     print(f"  Fields updated:               {fields_updated:>6}")
     print(f"  BET fields updated (Step 8):  {bet_fields_updated:>6}")
@@ -382,6 +411,7 @@ def main():
     print(f"  Match summary:        {output_match_path}")
     print(f"  Orphan GED docs:      {orphan_path}")
     print(f"  Orphan summary:       {orphan_summary_path}")
+    print(f"  Unmatched GF rows:    {unmatched_path}")
     print("=" * 60)
 
     return 0
