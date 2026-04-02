@@ -267,14 +267,4 @@ FUZZY_MAX_INDICE_DISTANCE: int = 5
 
 # ---------------------------------------------------------------------------
 # Matching confidence levels
-# ---------------------------------------------------------------------------
-CONFIDENCE_EXACT   = "EXACT"
-CONFIDENCE_FUZZY   = "FUZZY"
-CONFIDENCE_PARTIAL = "PARTIAL"
-CONFIDENCE_NONE    = "UNMATCHED"
-
-MATCH_LEVEL_1 = "LEVEL_1_FULL_KEY"
-MATCH_LEVEL_2 = "LEVEL_2_LOT_TYPE_NUM"
-MATCH_LEVEL_3 = "LEVEL_3_TYPE_NUM"
-MATCH_LEVEL_4 = "LEVEL_4_NUM_STRIPPED"
-MATCH_NONE    = "UNMATCHED"
+# -----

@@ -186,44 +186,4 @@ function DownloadRow({ type, iconLabel, iconColor, name, desc, onDownload }) {
     <div style={{
       display: 'flex',
       alignItems: 'center',
-      gap: 10,
-      padding: '10px 14px',
-      border: '0.5px solid var(--color-border)',
-      borderRadius: 'var(--radius-md)',
-      marginBottom: 8,
-      background: 'var(--color-bg)',
-    }}>
-      <div style={{
-        width: 32, height: 32,
-        borderRadius: 6,
-        background: iconColor.bg,
-        color: iconColor.color,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        fontSize: 11, fontWeight: 500,
-        flexShrink: 0,
-      }}>
-        {iconLabel}
-      </div>
-      <div style={{ flex: 1 }}>
-        <div style={{ fontSize: 13, fontWeight: 500 }}>{name}</div>
-        <div style={{ fontSize: 11, color: 'var(--color-text-secondary)', marginTop: 1 }}>{desc}</div>
-      </div>
-      <button
-        onClick={() => onDownload(type)}
-        style={{
-          padding: '6px 14px',
-          background: 'var(--color-bg-secondary)',
-          border: '0.5px solid var(--color-border-strong)',
-          borderRadius: 'var(--radius-md)',
-          fontSize: 12,
-          fontWeight: 500,
-          cursor: 'pointer',
-          color: 'var(--color-text)',
-          whiteSpace: 'nowrap',
-        }}
-      >
-        ↓ Télécharger
-      </button>
-    </div>
-  )
-}
+      gap: 10,

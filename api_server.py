@@ -417,23 +417,4 @@ if __name__ == "__main__":
     _UI_DIST = _BUNDLE_DIR / "ui" / "dist"
     if _UI_DIST.exists():
         # Mount static assets (JS/CSS/icons)
-        app.mount("/assets", StaticFiles(directory=str(_UI_DIST / "assets")), name="assets")
-
-        # SPA catch-all: serve index.html for any non-/api route
-        from fastapi.responses import HTMLResponse
-
-        @app.get("/{full_path:path}", include_in_schema=False)
-        async def spa_fallback(full_path: str):
-            index = _UI_DIST / "index.html"
-            return HTMLResponse(content=index.read_text(encoding="utf-8"))
-
-    # Open browser after a short delay (give uvicorn time to start)
-    def _open_browser():
-        import time
-        time.sleep(1.2)
-        webbrowser.open("http://127.0.0.1:8000")
-
-    threading.Thread(target=_open_browser, daemon=True).start()
-
-    _cleanup_old_tmp_dirs(max_age_hours=48)
-    uvicorn.run(app, host="127.0.0.1", port=8000, reload=False)
+        app.mount("/assets", Static

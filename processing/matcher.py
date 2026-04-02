@@ -605,27 +605,3 @@ def _score_ged_to_gf(cr: CanonicalResponse, gf_row: GFRow) -> int:
         if str(cr.indice).strip().upper() == str(gf_row.indice).strip().upper():
             score += 10
 
-    # EMETTEUR +5
-    if cr.emetteur and doc_key_upper:
-        if str(cr.emetteur).strip().upper() in doc_key_upper:
-            score += 5
-
-    # LOT +2
-    if cr.lot and gf_row.lot:
-        if normalize_lot(cr.lot) == normalize_lot(gf_row.lot):
-            score += 2
-
-    return score
-
-
-def _flatten_unique(ged_index: GEDNumeroIndex) -> list[CanonicalResponse]:
-    """Get one representative CanonicalResponse per unique document (NUMERO+INDICE)."""
-    seen = set()
-    result = []
-    for num in ged_index.all_numeros:
-        for cr in ged_index.find(num):
-            doc_id = (cr.numero, cr.indice)
-            if doc_id not in seen:
-                seen.add(doc_id)
-                result.append(cr)
-    return result
